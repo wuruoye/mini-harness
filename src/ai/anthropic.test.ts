@@ -140,13 +140,13 @@ async function* stream(events: SseEvent[]): AsyncGenerator<SseEvent> {
   yield* events;
 }
 
-const start = (usage?: Record<string, number>) =>
+const start = (usage?: Record<string, number | null>) =>
   sse({ type: "message_start", message: { id: "msg_1", model: MODEL, ...(usage && { usage }) } });
 const blockStart = (index: number, content_block: Record<string, unknown>) =>
   sse({ type: "content_block_start", index, content_block });
 const delta = (index: number, d: Record<string, unknown>) => sse({ type: "content_block_delta", index, delta: d });
 const blockStop = (index: number) => sse({ type: "content_block_stop", index });
-const messageDelta = (stop_reason: string, usage?: Record<string, number>) =>
+const messageDelta = (stop_reason: string, usage?: Record<string, number | null>) =>
   sse({ type: "message_delta", delta: { stop_reason }, ...(usage && { usage }) });
 const stop = sse({ type: "message_stop" });
 
@@ -261,6 +261,22 @@ describe("readAnthropicStream", () => {
       stream([
         start({ input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 100, cache_creation_input_tokens: 50 }),
         messageDelta("end_turn", { output_tokens: 20 }),
+        stop,
+      ]),
+    );
+    assert.deepEqual(message.usage, { inputTokens: 3, outputTokens: 20, cacheReadTokens: 100, cacheWriteTokens: 50 });
+  });
+
+  test("usage：message_delta 里为 null 的字段不覆盖已有的值", async () => {
+    const message = await readAnthropicStream(
+      stream([
+        start({ input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 100, cache_creation_input_tokens: 50 }),
+        messageDelta("end_turn", {
+          input_tokens: null,
+          output_tokens: 20,
+          cache_read_input_tokens: null,
+          cache_creation_input_tokens: null,
+        }),
         stop,
       ]),
     );

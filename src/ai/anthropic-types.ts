@@ -61,11 +61,15 @@ export type AnthropicStopReason =
   | "model_context_window_exceeded"
   | "pause_turn";
 
+/**
+ * 输入和缓存字段可能是 null，表示这次没有给出，不能用来覆盖已有的值。
+ * 字段定义见官方 TypeScript SDK 的 Usage 和 MessageDeltaUsage。
+ */
 export interface AnthropicUsage {
-  input_tokens?: number;
+  input_tokens?: number | null;
   output_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
 }
 
 export type AnthropicDelta =
