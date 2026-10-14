@@ -157,6 +157,7 @@ describe("applyMode", () => {
   test("isPermissionMode", () => {
     assert.equal(isPermissionMode("auto"), true);
     assert.equal(isPermissionMode("acceptEdits"), true);
+    assert.equal(isPermissionMode("sandbox"), true);
     assert.equal(isPermissionMode("yolo"), false);
     assert.equal(isPermissionMode("toString"), false);
   });
@@ -191,5 +192,25 @@ describe("applyMode", () => {
     assert.equal(applyMode("acceptEdits", "deny", "edit", { path: "src/a.ts" }, cwd), "deny");
     assert.equal(applyMode("acceptEdits", "ask", "bash", { command: "echo hi > a.txt" }, cwd), "ask");
     assert.equal(applyMode("acceptEdits", "ask", "edit", {}, cwd), "ask");
+  });
+
+  test("sandbox：项目里的文件操作不再询问，项目外的按规则", () => {
+    for (const tool of ["read_file", "edit", "write_file"]) {
+      assert.equal(applyMode("sandbox", "ask", tool, { path: "src/a.ts" }, cwd), "allow", tool);
+      assert.equal(applyMode("sandbox", "ask", tool, { path: "/etc/hosts" }, cwd), "ask", tool);
+    }
+    assert.equal(applyMode("sandbox", "allow", "read_file", { path: "/etc/hosts" }, cwd), "allow");
+    assert.equal(applyMode("sandbox", "deny", "edit", { path: "src/a.ts" }, cwd), "deny");
+  });
+
+  test("sandbox：沙箱里的 bash 命令不再询问，申请在沙箱外执行的按规则", () => {
+    assert.equal(applyMode("sandbox", "ask", "bash", { command: "npm test; echo done" }, cwd), "allow");
+    assert.equal(applyMode("sandbox", "ask", "bash", { command: "npm test", sandbox: true }, cwd), "allow");
+    assert.equal(applyMode("sandbox", "ask", "bash", { command: "npm install", sandbox: false }, cwd), "ask");
+    assert.equal(applyMode("sandbox", "deny", "bash", { command: "rm -rf /" }, cwd), "deny");
+  });
+
+  test("sandbox：其他工具不变", () => {
+    assert.equal(applyMode("sandbox", "ask", "web_fetch", { url: "https://example.com" }, cwd), "ask");
   });
 });

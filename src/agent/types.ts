@@ -1,8 +1,18 @@
 import type { Message, Provider, StopReason, ToolCallBlock, ToolDefinition } from "../ai/types.ts";
 
+/** 沙箱配置：bash 命令在沙箱里执行时，只能写这些目录 */
+export interface SandboxPolicy {
+  /** 可写的目录，工作目录和临时目录要包含在内 */
+  writableDirs: string[];
+  /** 是否允许联网 */
+  allowNetwork: boolean;
+}
+
 export interface ToolContext {
   /** 工作目录，相对路径以它为准 */
   cwd: string;
+  /** 设置了就表示当前在 sandbox 模式，bash 默认在沙箱里执行 */
+  sandbox?: SandboxPolicy;
 }
 
 export interface ToolResult {
@@ -43,6 +53,8 @@ export interface AgentOptions {
    * 怎么判断、要不要询问用户，由调用方（比如命令行界面）实现，主循环只等结果
    */
   checkPermission?: (toolCall: ToolCallBlock) => Promise<PermissionDecision>;
+  /** 沙箱配置，原样放进每次工具调用的 context；不传表示不用沙箱 */
+  sandbox?: SandboxPolicy;
 }
 
 export interface AgentResult {

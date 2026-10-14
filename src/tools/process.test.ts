@@ -1,9 +1,11 @@
-import { after, before, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runCommand, type RunOptions } from "./process.ts";
+import type { SandboxPolicy } from "../agent/types.ts";
 
 let dir = "";
 let options: RunOptions;
@@ -54,4 +56,60 @@ test("输出超长时保留开头和结尾，中间注明省略了多少", async
 test("stdin 是关闭的，等待输入的命令不会卡住", async () => {
   const result = await runCommand("cat; echo done", options);
   assert.equal(result.output, "done\n");
+});
+
+describe("沙箱", { skip: process.platform !== "darwin" && "沙箱只支持 macOS" }, () => {
+  let project = "";
+  let outside = "";
+  let server: Server;
+  let port = 0;
+
+  before(async () => {
+    // 故意不解析符号链接，检查 runCommand 自己会处理 /var → /private/var
+    const root = await mkdtemp(join(tmpdir(), "mini-harness-sbx-"));
+    project = join(root, "project");
+    outside = join(root, "outside");
+    await mkdir(project);
+    await mkdir(outside);
+    server = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const address = server.address();
+    port = typeof address === "object" && address ? address.port : 0;
+  });
+
+  after(async () => {
+    server.close();
+    await rm(dirname(project), { recursive: true, force: true });
+  });
+
+  const policy = (allowNetwork = true): SandboxPolicy => ({ writableDirs: [project], allowNetwork });
+  const run = (command: string, sandbox: SandboxPolicy) => runCommand(command, { cwd: project, timeoutMs: 5000, maxOutputChars: 2000, sandbox });
+
+  test("可写目录里能写，目录外写不了", async () => {
+    const inside = await run("echo hi > a.txt && cat a.txt", policy());
+    assert.equal(inside.exitCode, 0);
+    assert.equal(inside.output, "hi\n");
+
+    const denied = await run(`echo hi > ${outside}/b.txt`, policy());
+    assert.notEqual(denied.exitCode, 0);
+    assert.match(denied.output, /Operation not permitted/);
+    await assert.rejects(readFile(join(outside, "b.txt")));
+  });
+
+  test("可以读目录外的文件", async () => {
+    const result = await run("head -c 1 /etc/hosts > /dev/null && echo read", policy());
+    assert.equal(result.output, "read\n");
+  });
+
+  test("allowNetwork 控制能不能联网", async () => {
+    const curl = `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:${port}/`;
+    assert.equal((await run(curl, policy(true))).output, "200");
+    const blocked = await run(curl, policy(false));
+    assert.notEqual(blocked.exitCode, 0);
+  });
+
+  test("不设置 sandbox 时不受限制", async () => {
+    const result = await runCommand(`echo hi > ${outside}/c.txt && cat ${outside}/c.txt`, { cwd: project, timeoutMs: 5000, maxOutputChars: 2000 });
+    assert.equal(result.output, "hi\n");
+  });
 });

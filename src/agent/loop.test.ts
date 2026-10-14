@@ -279,3 +279,18 @@ test("权限：先发 toolStart 事件，再询问权限，最后发 toolEnd", a
   }));
   assert.deepEqual(order, ["toolStart", "checkPermission", "toolEnd"]);
 });
+
+test("沙箱配置原样放进工具的 context", async () => {
+  let seen: ToolContext | undefined;
+  const spy: Tool = {
+    definition: { name: "spy", description: "", parameters: { type: "object", properties: {} } },
+    async execute(_args, context) {
+      seen = context;
+      return { content: "" };
+    },
+  };
+  const sandbox = { writableDirs: ["/my/project", "/tmp"], allowNetwork: false };
+  const provider = new FakeProvider([fakeReply([toolCall("1", "spy")]), fakeReply([text("ok")])]);
+  await runAgent([user("x")], options(provider, { tools: [spy], cwd: "/my/project", sandbox }));
+  assert.deepEqual(seen, { cwd: "/my/project", sandbox });
+});

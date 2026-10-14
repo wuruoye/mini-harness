@@ -72,14 +72,16 @@ export function evaluatePermission(
  * - acceptEdits：edit 和 write_file 改的是工作目录里的文件时不再询问
  * - auto：需要询问的一律放行，规则禁止的仍然拒绝
  * - bypass：跳过所有判断，包括规则禁止的操作
+ * - sandbox：项目里的文件操作和沙箱里的 bash 命令不再询问，项目外的按规则来
  */
-export type PermissionMode = "default" | "acceptEdits" | "auto" | "bypass";
+export type PermissionMode = "default" | "acceptEdits" | "auto" | "bypass" | "sandbox";
 
 export const PERMISSION_MODES: Record<PermissionMode, string> = {
   default: "按规则放行、询问或拒绝",
   acceptEdits: "工作目录里的文件修改不再询问，其他照常",
   auto: "需要确认的操作自动放行，规则禁止的仍然拒绝",
   bypass: "所有操作都不经确认直接执行，包括规则禁止的",
+  sandbox: "项目里的文件操作和沙箱里的命令不再询问，项目外的按规则来",
 };
 
 export function isPermissionMode(value: string): value is PermissionMode {
@@ -102,6 +104,10 @@ export function isInside(cwd: string, path: unknown): boolean {
  * - acceptEdits：工具是 edit 或 write_file，并且参数 path 在 cwd 里面时，ask 变成 allow；deny 不变；其他情况原样返回
  * - auto：ask 变成 allow，其他原样返回
  * - bypass：一律 allow
+ * - sandbox：只把 ask 变成 allow，deny 不变，并且只在下面两种情况下：
+ *   - read_file、edit、write_file 的参数 path 在 cwd 里面
+ *   - bash 的参数 sandbox 不是 false，也就是命令会在沙箱里执行，写不了项目外的文件
+ *   其他情况原样返回，比如项目外的文件、申请在沙箱外执行的 bash
  */
 export function applyMode(
   mode: PermissionMode,

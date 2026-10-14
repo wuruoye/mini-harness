@@ -1,7 +1,8 @@
 // 命令行入口：读取用户输入，交给主循环，把过程打印出来。
 
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
@@ -19,7 +20,7 @@ import {
   type PermissionMode,
   type PermissionRule,
 } from "./agent/permission.ts";
-import type { AgentEvent, PermissionDecision } from "./agent/types.ts";
+import type { AgentEvent, PermissionDecision, SandboxPolicy } from "./agent/types.ts";
 import { bashTool } from "./tools/bash.ts";
 import { editTool } from "./tools/edit.ts";
 import { readFileTool } from "./tools/read-file.ts";
@@ -123,14 +124,37 @@ function initialMode(): PermissionMode {
   if (!isPermissionMode(value)) {
     fail(`权限模式只能是 ${Object.keys(PERMISSION_MODES).join("、")} 之一，现在是 ${value}`);
   }
+  if (value === "sandbox" && process.platform !== "darwin") fail("sandbox 模式目前只支持 macOS");
   return value;
 }
+
+/**
+ * sandbox 模式下 bash 的沙箱配置：可写的是工作目录、临时目录，以及 MH_SANDBOX_WRITABLE 里列出的目录（冒号分隔，可以用 ~）；
+ * MH_SANDBOX_NETWORK=off 时禁止联网
+ */
+const sandboxPolicy: SandboxPolicy = {
+  writableDirs: [
+    cwd,
+    tmpdir(),
+    "/tmp",
+    ...(process.env.MH_SANDBOX_WRITABLE ?? "")
+      .split(":")
+      .map((dir) => dir.trim())
+      .filter((dir) => dir !== "")
+      .map((dir) => resolve(cwd, dir.replace(/^~(?=$|\/)/, homedir()))),
+  ],
+  allowNetwork: process.env.MH_SANDBOX_NETWORK !== "off",
+};
 
 let mode = initialMode();
 
 function describeMode(): string {
   const text = `权限模式 ${mode}：${PERMISSION_MODES[mode]}`;
   if (mode === "bypass") return styleText("red", `${text}。建议只在容器或临时目录里这样用`);
+  if (mode === "sandbox") {
+    const network = sandboxPolicy.allowNetwork ? "可以联网" : "禁止联网";
+    return styleText("dim", `${text}。沙箱里可写：${sandboxPolicy.writableDirs.join("、")}；${network}`);
+  }
   return styleText("dim", text);
 }
 
@@ -255,6 +279,8 @@ while (true) {
       for (const [name, text] of Object.entries(PERMISSION_MODES)) {
         console.log(`${name === mode ? "*" : " "} ${name.padEnd(12)} ${styleText("dim", text)}`);
       }
+    } else if (next === "sandbox" && process.platform !== "darwin") {
+      console.log(styleText("red", "sandbox 模式目前只支持 macOS"));
     } else if (isPermissionMode(next)) {
       mode = next;
       console.log(describeMode());
@@ -273,6 +299,7 @@ while (true) {
       cwd,
       onEvent: printEvent,
       checkPermission,
+      sandbox: mode === "sandbox" ? sandboxPolicy : undefined,
     });
     const added = result.messages.slice(history.length);
     history = result.messages;

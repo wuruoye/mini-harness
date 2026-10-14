@@ -1,9 +1,10 @@
-import { after, before, test } from "node:test";
+import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bashTool } from "./bash.ts";
+import type { SandboxPolicy } from "../agent/types.ts";
 
 let dir = "";
 
@@ -62,4 +63,48 @@ test("timeout_ms 不是正数时抛异常，信息里提到 timeout_ms", async (
   await assert.rejects(run({ command: "true", timeout_ms: 0 }), /timeout_ms/);
   await assert.rejects(run({ command: "true", timeout_ms: -1 }), /timeout_ms/);
   await assert.rejects(run({ command: "true", timeout_ms: "1000" }), /timeout_ms/);
+});
+
+test("定义里有 sandbox 参数", () => {
+  const properties = bashTool.definition.parameters.properties as Record<string, unknown>;
+  assert.ok("sandbox" in properties);
+});
+
+describe("沙箱", { skip: process.platform !== "darwin" && "沙箱只支持 macOS" }, () => {
+  let project = "";
+  let outside = "";
+  let sandbox: SandboxPolicy;
+
+  before(async () => {
+    project = join(dir, "project");
+    outside = join(dir, "outside");
+    await mkdir(project);
+    await mkdir(outside);
+    sandbox = { writableDirs: [project], allowNetwork: true };
+  });
+
+  test("context 里有 sandbox 时在沙箱里执行，写不了项目外的文件", async () => {
+    const result = await bashTool.execute({ command: `echo hi > ${outside}/a.txt` }, { cwd: project, sandbox });
+    assert.equal(result.isError, true);
+    assert.match(result.content, /Operation not permitted/);
+    await assert.rejects(readFile(join(outside, "a.txt")));
+  });
+
+  test("沙箱里可以写项目目录", async () => {
+    const result = await bashTool.execute({ command: "echo hi > in.txt && cat in.txt" }, { cwd: project, sandbox });
+    assert.notEqual(result.isError, true);
+    assert.match(result.content, /^hi\n/);
+  });
+
+  test("sandbox 为 false 时在沙箱外执行", async () => {
+    const result = await bashTool.execute({ command: `echo hi > ${outside}/b.txt`, sandbox: false }, { cwd: project, sandbox });
+    assert.notEqual(result.isError, true);
+    assert.equal(await readFile(join(outside, "b.txt"), "utf8"), "hi\n");
+  });
+
+  test("context 里没有 sandbox 时不用沙箱", async () => {
+    const result = await bashTool.execute({ command: `echo hi > ${outside}/c.txt` }, { cwd: project });
+    assert.notEqual(result.isError, true);
+    assert.equal(await readFile(join(outside, "c.txt"), "utf8"), "hi\n");
+  });
 });

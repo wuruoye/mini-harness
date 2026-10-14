@@ -1,6 +1,8 @@
-// 执行 shell 命令的底层封装：超时后结束整组进程，输出太长时只保留开头和结尾。
+// 执行 shell 命令的底层封装：超时后结束整组进程，输出太长时只保留开头和结尾；可以放进沙箱里执行。
 
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+import type { SandboxPolicy } from "../agent/types.ts";
 
 export interface RunOptions {
   cwd: string;
@@ -8,6 +10,8 @@ export interface RunOptions {
   timeoutMs: number;
   /** 输出最多保留多少个字符，超出时保留开头和结尾各一半，中间省略 */
   maxOutputChars: number;
+  /** 设置了就在沙箱里执行，目前只支持 macOS */
+  sandbox?: SandboxPolicy;
 }
 
 export interface RunResult {
@@ -24,14 +28,50 @@ export interface RunResult {
 
 const KILL_GRACE_MS = 2000;
 
+/** 沙箱按真实路径匹配，/var 这类符号链接要先解析成 /private/var；目录不存在时原样使用 */
+function realDir(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/**
+ * 生成 macOS sandbox-exec 的启动参数。
+ * 配置用的是 Apple 的 SBPL 语言：默认全部允许，再禁止所有写文件，然后只放开可写目录和几个设备文件。
+ * 目录通过 -D 传参，不直接拼进配置文本，路径里有引号等特殊字符也不会出错。
+ */
+export function sandboxExecArgs(policy: SandboxPolicy): string[] {
+  const dirs = policy.writableDirs.map(realDir);
+  const profile = [
+    "(version 1)",
+    "(allow default)",
+    "(deny file-write*)",
+    "(allow file-write*",
+    ...dirs.map((_, i) => `  (subpath (param "W${i}"))`),
+    '  (literal "/dev/null") (literal "/dev/zero")',
+    '  (regex #"^/dev/tty") (regex #"^/dev/fd/"))',
+    ...(policy.allowNetwork ? [] : ["(deny network*)"]),
+  ].join("\n");
+  return [...dirs.flatMap((dir, i) => ["-D", `W${i}=${dir}`]), "-p", profile];
+}
+
 /**
  * 用 bash -c 执行命令。
  * - 在独立的进程组里运行，超时时连同它启动的子进程一起结束，避免留下后台进程
  * - stdin 直接关闭，等待输入的命令会立刻读到结束，不会一直卡住
  */
 export function runCommand(command: string, options: RunOptions): Promise<RunResult> {
+  if (options.sandbox && process.platform !== "darwin") {
+    return Promise.reject(new Error(`沙箱目前只支持 macOS，当前系统是 ${process.platform}`));
+  }
+  const [file, args] = options.sandbox
+    ? ["/usr/bin/sandbox-exec", [...sandboxExecArgs(options.sandbox), "bash", "-c", command]]
+    : ["bash", ["-c", command]];
+
   return new Promise((resolve, reject) => {
-    const child = spawn("bash", ["-c", command], {
+    const child = spawn(file, args, {
       cwd: options.cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
