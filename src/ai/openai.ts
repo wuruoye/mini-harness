@@ -1,6 +1,6 @@
-import type { OpenAIRequestBody } from "./openai-types.ts";
-import type { SseEvent } from "./sse.ts";
-import type { AssistantMessage, ModelRequest, Provider } from "./types.ts";
+import type { OpenAIChunk, OpenAIRequestBody, OpenAIToolCall } from "./openai-types.ts";
+import { parseSse, type SseEvent } from "./sse.ts";
+import type { AssistantContent, AssistantMessage, ModelRequest, Provider, StopReason } from "./types.ts";
 
 export const PROVIDER_NAME = "openai";
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -32,7 +32,66 @@ export interface OpenAIOptions {
  * - 每个工具结果单独一条 role 为 "tool" 的消息；isError 为 true 时在 content 前面加上 "错误："
  */
 export function toOpenAIRequest(request: ModelRequest, options: OpenAIOptions): OpenAIRequestBody {
-  throw new Error("未实现");
+  const body: OpenAIRequestBody = {
+    model: options.model,
+    messages: [{ role: "system", content: request.system }],
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+
+  if (request.tools.length > 0) {
+    body.tools = request.tools.map((tool) => ({
+      type: "function",
+      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+    }));
+  }
+  if (options.maxTokens !== undefined) {
+    body.max_completion_tokens = options.maxTokens;
+  }
+  if (options.reasoningEffort !== undefined) {
+    body.reasoning_effort = options.reasoningEffort;
+  }
+
+  for (const message of request.messages) {
+    if (message.role === "user") {
+      body.messages.push({ role: "user", content: message.content });
+      continue;
+    }
+    if (message.role === "toolResult") {
+      body.messages.push({
+        role: "tool",
+        tool_call_id: message.toolCallId,
+        content: message.isError ? `错误：${message.content}` : message.content,
+      });
+      continue;
+    }
+
+    const textParts: string[] = [];
+    const toolCalls: OpenAIToolCall[] = [];
+    for (const block of message.content) {
+      switch (block.type) {
+        case "text":
+          if (block.text !== "") textParts.push(block.text);
+          break;
+        case "toolCall":
+          toolCalls.push({
+            id: block.id,
+            type: "function",
+            function: { name: block.name, arguments: JSON.stringify(block.arguments) },
+          });
+          break;
+      }
+    }
+    if (textParts.length === 0 && toolCalls.length === 0) continue;
+
+    body.messages.push({
+      role: "assistant",
+      content: textParts.length > 0 ? textParts.join("\n") : null,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    });
+  }
+
+  return body;
 }
 
 /**
@@ -51,7 +110,88 @@ export function toOpenAIRequest(request: ModelRequest, options: OpenAIOptions): 
  * - 没收到 [DONE] 就结束了要抛异常，信息里提到 [DONE]；收到了但从没拿到 finish_reason 也抛异常
  */
 export async function readOpenAIStream(events: AsyncIterable<SseEvent>): Promise<AssistantMessage> {
-  throw new Error("未实现");
+  let model = "";
+  let text = "";
+  let thinking = "";
+  let stopReason: StopReason | undefined;
+  let done = false;
+  const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const toolCalls = new Map<number, OpenAIToolCall>();
+
+  for await (const event of events) {
+    if (event.data === "[DONE]") {
+      done = true;
+      break;
+    }
+
+    const chunk: OpenAIChunk = JSON.parse(event.data);
+    if (chunk.error) {
+      throw new Error(`OpenAI 流式响应出错：${chunk.error.message}`);
+    }
+    if (chunk.model !== undefined) model = chunk.model;
+    if (chunk.usage) {
+      usage.cacheReadTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+      usage.inputTokens = chunk.usage.prompt_tokens - usage.cacheReadTokens;
+      usage.outputTokens = chunk.usage.completion_tokens;
+    }
+
+    for (const choice of chunk.choices) {
+      // 当前接口只返回一条消息，取 index 为 0 的候选。
+      if (choice.index !== 0) continue;
+
+      text += choice.delta.content ?? "";
+      thinking += choice.delta.reasoning_content ?? "";
+      for (const part of choice.delta.tool_calls ?? []) {
+        const call: OpenAIToolCall = toolCalls.get(part.index) ?? {
+          id: "",
+          type: "function",
+          function: { name: "", arguments: "" },
+        };
+        if (part.id !== undefined) call.id = part.id;
+        if (part.function?.name !== undefined) call.function.name = part.function.name;
+        call.function.arguments += part.function?.arguments ?? "";
+        toolCalls.set(part.index, call);
+      }
+
+      if (choice.finish_reason != null) {
+        switch (choice.finish_reason) {
+          case "stop":
+            stopReason = "stop";
+            break;
+          case "tool_calls":
+            stopReason = "toolUse";
+            break;
+          case "length":
+            stopReason = "length";
+            break;
+          case "content_filter":
+            stopReason = "refusal";
+            break;
+          default:
+            throw new Error(`不支持的 finish_reason：${choice.finish_reason}`);
+        }
+      }
+    }
+  }
+
+  if (!done) throw new Error("OpenAI 响应流在收到 [DONE] 前结束");
+  if (stopReason === undefined) throw new Error("OpenAI 响应流缺少 finish_reason");
+
+  const content: AssistantContent[] = [];
+  if (thinking !== "") content.push({ type: "thinking", thinking });
+  if (text !== "") content.push({ type: "text", text });
+  for (const [, call] of [...toolCalls].sort(([a], [b]) => a - b)) {
+    let args: Record<string, unknown>;
+    try {
+      args = call.function.arguments === "" ? {} : JSON.parse(call.function.arguments);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`工具 ${call.function.name} 的参数不是合法 JSON：${message}`);
+    }
+    content.push({ type: "toolCall", id: call.id, name: call.function.name, arguments: args });
+  }
+
+  return { role: "assistant", content, stopReason, provider: PROVIDER_NAME, model, usage };
 }
 
 export class OpenAIProvider implements Provider {
@@ -68,6 +208,23 @@ export class OpenAIProvider implements Provider {
    * 否则用 parseSse 和 readOpenAIStream 把响应解析成 assistant 消息。
    */
   async complete(request: ModelRequest): Promise<AssistantMessage> {
-    throw new Error("未实现");
+    const { apiKey, baseUrl = DEFAULT_BASE_URL, fetch: fetchImpl = globalThis.fetch } = this.#options;
+    const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(toOpenAIRequest(request, this.#options)),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI 请求失败（HTTP ${response.status}）：${await response.text()}`);
+    }
+    if (response.body === null) {
+      throw new Error("OpenAI 响应缺少数据流");
+    }
+
+    return readOpenAIStream(parseSse(response.body));
   }
 }
