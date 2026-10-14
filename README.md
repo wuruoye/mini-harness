@@ -26,10 +26,12 @@ pnpm start
 
 `LLM_PROVIDER` 决定用哪家，默认 `anthropic`，设为 `openai` 时用 OpenAI 格式的接口，改 `OPENAI_BASE_URL` 就能接兼容 OpenAI 的其他服务。
 
+程序启动时会自己读取 mini-harness 根目录下的 `.env`，不管从哪个目录、用什么方式启动都一样；已经在环境里设置过的变量优先，不会被 `.env` 覆盖。
+
 这时工作目录是 mini-harness 本身。要让它操作别的项目，进入那个项目的目录后运行：
 
 ```bash
-node --env-file=$HOME/Documents/github/mini-harness/.env $HOME/Documents/github/mini-harness/src/main.ts
+node ~/Documents/github/mini-harness/src/main.ts
 ```
 
 输入 `/exit` 或按 Ctrl-D 退出。

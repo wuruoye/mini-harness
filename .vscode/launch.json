@@ -7,7 +7,6 @@
       "request": "launch",
       "program": "${workspaceFolder}/scripts/explore-anthropic.ts",
       "args": [],
-      "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": [
@@ -22,7 +21,6 @@
       "args": [
         "--tool"
       ],
-      "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": [
@@ -33,7 +31,6 @@
       "name": "观察 OpenAI 响应",
       "type": "node",
       "request": "launch",
-      "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": [
@@ -46,7 +43,6 @@
       "name": "观察 OpenAI 响应：带工具",
       "type": "node",
       "request": "launch",
-      "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": [
@@ -90,7 +86,6 @@
       "type": "node",
       "request": "launch",
       "program": "${workspaceFolder}/src/main.ts",
-      "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": [

@@ -13,7 +13,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { parseArgs, styleText } from "node:util";
 import { parseSse } from "../src/ai/sse.ts";
+import { loadProjectEnv } from "../src/env.ts";
 
+loadProjectEnv();
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
   console.error("缺少环境变量 OPENAI_API_KEY，先把 .env.example 复制为 .env 并填写");

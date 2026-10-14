@@ -8,10 +8,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env src/main.ts",
-    "start:debug": "node --inspect-wait --env-file-if-exists=.env src/main.ts",
-    "explore:anthropic": "node --env-file-if-exists=.env scripts/explore-anthropic.ts",
-    "explore:openai": "node --env-file-if-exists=.env scripts/explore-openai.ts",
+    "start": "node src/main.ts",
+    "start:debug": "node --inspect-wait src/main.ts",
+    "explore:anthropic": "node scripts/explore-anthropic.ts",
+    "explore:openai": "node scripts/explore-openai.ts",
     "replay": "node scripts/replay.ts",
     "test": "node --test",
     "typecheck": "tsc --noEmit",

@@ -9,6 +9,9 @@ import type { AssistantMessage, Message, Provider, Usage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
 import type { AgentEvent } from "./agent/types.ts";
 import { readFileTool } from "./tools/read-file.ts";
+import { loadProjectEnv } from "./env.ts";
+
+loadProjectEnv();
 
 const SYSTEM_PROMPT = `你是一个编程助手，在用户的项目目录里工作。
 需要了解代码时，用工具读取文件，不要猜测文件内容。
