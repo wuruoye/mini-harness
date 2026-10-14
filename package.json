@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
+    "start:debug": "node --inspect-wait --env-file-if-exists=.env src/main.ts",
     "explore:anthropic": "node --env-file-if-exists=.env scripts/explore-anthropic.ts",
     "explore:openai": "node --env-file-if-exists=.env scripts/explore-openai.ts",
     "replay": "node scripts/replay.ts",

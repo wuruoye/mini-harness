@@ -55,6 +55,8 @@ pnpm replay tmp/anthropic-xxx.sse
 
 用 VS Code 打开项目后，在「运行和调试」里可以直接选这几个脚本，以及运行 agent、调试当前测试文件，断点可以打在 .ts 文件里。
 
+在 VS Code 以外的终端里调试：先用 `pnpm start:debug` 启动，程序会等调试器连上再运行；然后在 VS Code 的「运行和调试」里选「附加到外部终端启动的 agent」，或者在 Chrome 打开 `chrome://inspect` 连接。输入仍然在原来的终端里进行。
+
 ## 目录
 
 | 路径 | 内容 |
