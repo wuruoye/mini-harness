@@ -292,5 +292,21 @@ test("沙箱配置原样放进工具的 context", async () => {
   const sandbox = { writableDirs: ["/my/project", "/tmp"], allowNetwork: false };
   const provider = new FakeProvider([fakeReply([toolCall("1", "spy")]), fakeReply([text("ok")])]);
   await runAgent([user("x")], options(provider, { tools: [spy], cwd: "/my/project", sandbox }));
-  assert.deepEqual(seen, { cwd: "/my/project", sandbox });
+  assert.equal(seen?.cwd, "/my/project");
+  assert.deepEqual(seen?.sandbox, sandbox);
+});
+
+test("checkPermission 也放进工具的 context，工具执行中可以再申请权限", async () => {
+  let seen: ToolContext | undefined;
+  const spy: Tool = {
+    definition: { name: "spy", description: "", parameters: { type: "object", properties: {} } },
+    async execute(_args, context) {
+      seen = context;
+      return { content: "" };
+    },
+  };
+  const checkPermission = async (): Promise<PermissionDecision> => ({ allowed: true });
+  const provider = new FakeProvider([fakeReply([toolCall("1", "spy")]), fakeReply([text("ok")])]);
+  await runAgent([user("x")], options(provider, { tools: [spy], checkPermission }));
+  assert.equal(seen?.checkPermission, checkPermission);
 });

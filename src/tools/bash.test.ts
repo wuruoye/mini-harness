@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashTool } from "./bash.ts";
-import type { SandboxPolicy } from "../agent/types.ts";
+import { bashTool, SANDBOX_ESCALATION_REASON } from "./bash.ts";
+import type { CheckPermission, PermissionDecision, SandboxPolicy } from "../agent/types.ts";
+import type { ToolCallBlock } from "../ai/types.ts";
 
 let dir = "";
 
@@ -100,6 +101,54 @@ describe("沙箱", { skip: process.platform !== "darwin" && "沙箱只支持 mac
     const result = await bashTool.execute({ command: `echo hi > ${outside}/b.txt`, sandbox: false }, { cwd: project, sandbox });
     assert.notEqual(result.isError, true);
     assert.equal(await readFile(join(outside, "b.txt"), "utf8"), "hi\n");
+  });
+
+  /** 记录申请的假 checkPermission，按给定的决定回答 */
+  function recorder(decision: PermissionDecision) {
+    const calls: { toolCall: ToolCallBlock; reason: string | undefined }[] = [];
+    const checkPermission: CheckPermission = async (toolCall, reason) => {
+      calls.push({ toolCall, reason });
+      return decision;
+    };
+    return { calls, checkPermission };
+  }
+
+  test("被沙箱拦下时申请在沙箱外重新执行，同意后重新执行", async () => {
+    const { calls, checkPermission } = recorder({ allowed: true });
+    const command = `echo hi > ${outside}/escalate.txt && echo 写好了`;
+    const result = await bashTool.execute({ command, timeout_ms: 5000 }, { cwd: project, sandbox, checkPermission });
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]!.toolCall, {
+      type: "toolCall",
+      id: "sandbox-escalation",
+      name: "bash",
+      arguments: { command, timeout_ms: 5000, sandbox: false },
+    });
+    assert.equal(calls[0]!.reason, SANDBOX_ESCALATION_REASON);
+    assert.notEqual(result.isError, true);
+    assert.match(result.content, /^\[沙箱里被拦下，经用户同意在沙箱外重新执行\]\n/);
+    assert.match(result.content, /写好了/);
+    assert.equal(await readFile(join(outside, "escalate.txt"), "utf8"), "hi\n");
+  });
+
+  test("不同意时返回沙箱里那次的结果，并注明用户没有同意和理由", async () => {
+    const { checkPermission } = recorder({ allowed: false, reason: "不要动项目外的文件" });
+    const result = await bashTool.execute({ command: `echo hi > ${outside}/refused.txt` }, { cwd: project, sandbox, checkPermission });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content, /Operation not permitted/);
+    assert.match(result.content, /\n\[沙箱拦下了这个操作，用户没有同意在沙箱外执行：不要动项目外的文件\]$/);
+    await assert.rejects(readFile(join(outside, "refused.txt")));
+  });
+
+  test("不是被沙箱拦下的失败、执行成功、已经在沙箱外，都不申请", async () => {
+    const { calls, checkPermission } = recorder({ allowed: true });
+    await bashTool.execute({ command: "exit 3" }, { cwd: project, sandbox, checkPermission });
+    await bashTool.execute({ command: "echo ok" }, { cwd: project, sandbox, checkPermission });
+    await bashTool.execute({ command: `echo hi > ${outside}/direct.txt`, sandbox: false }, { cwd: project, sandbox, checkPermission });
+    await bashTool.execute({ command: "echo 'Operation not permitted'; exit 1" }, { cwd: project, checkPermission });
+    assert.equal(calls.length, 0);
   });
 
   test("context 里没有 sandbox 时不用沙箱", async () => {

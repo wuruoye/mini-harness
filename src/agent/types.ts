@@ -8,11 +8,21 @@ export interface SandboxPolicy {
   allowNetwork: boolean;
 }
 
+export type PermissionDecision = { allowed: true } | { allowed: false; reason?: string };
+
+/**
+ * 判断一次工具调用是否允许；需要询问时由调用方（比如命令行界面）去问用户。
+ * reason 是询问时额外显示给用户的说明，比如为什么要申请这个权限
+ */
+export type CheckPermission = (toolCall: ToolCallBlock, reason?: string) => Promise<PermissionDecision>;
+
 export interface ToolContext {
   /** 工作目录，相对路径以它为准 */
   cwd: string;
   /** 设置了就表示当前在 auto 模式，bash 默认在沙箱里执行 */
   sandbox?: SandboxPolicy;
+  /** 工具执行过程中需要额外申请权限时用，比如命令被沙箱拦下后申请在沙箱外重新执行 */
+  checkPermission?: CheckPermission;
 }
 
 export interface ToolResult {
@@ -38,8 +48,6 @@ export type AgentEvent =
   /** 工具调用执行完。result 和随后加入历史的工具结果一致，isError 已经补全 */
   | { type: "toolEnd"; toolCall: ToolCallBlock; result: Required<ToolResult> };
 
-export type PermissionDecision = { allowed: true } | { allowed: false; reason?: string };
-
 export interface AgentOptions {
   provider: Provider;
   system: string;
@@ -52,7 +60,7 @@ export interface AgentOptions {
    * 执行每个工具调用之前调用，决定是否允许；不传就全部允许。
    * 怎么判断、要不要询问用户，由调用方（比如命令行界面）实现，主循环只等结果
    */
-  checkPermission?: (toolCall: ToolCallBlock) => Promise<PermissionDecision>;
+  checkPermission?: CheckPermission;
   /** 沙箱配置，原样放进每次工具调用的 context；不传表示不用沙箱 */
   sandbox?: SandboxPolicy;
 }

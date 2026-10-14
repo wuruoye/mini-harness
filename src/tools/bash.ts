@@ -5,6 +5,11 @@ export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
 export const BASH_MAX_TIMEOUT_MS = 600_000;
 export const BASH_MAX_OUTPUT_CHARS = 30_000;
 
+/** 命令被沙箱拦下、申请在沙箱外重新执行时，显示给用户的说明 */
+export const SANDBOX_ESCALATION_REASON =
+  "这条命令在沙箱里执行时被拦下（Operation not permitted），可能是要写项目外的文件或联网。" +
+  "允许的话会在沙箱外从头重新执行一次，注意它在沙箱里可能已经执行了一部分。";
+
 export const bashTool: Tool = {
   definition: {
     name: "bash",
@@ -36,6 +41,14 @@ export const bashTool: Tool = {
    * - 退出码不为 0、超时、被信号结束时，isError 为 true
    * - context.sandbox 有值，并且 args.sandbox 不是 false 时，把 context.sandbox 传给 runCommand，
    *   在沙箱里执行；其他情况不用沙箱
+   * - 待实现：在沙箱里执行后，如果退出码不为 0、输出里有 "Operation not permitted"，并且 context.checkPermission 存在，
+   *   就认为是被沙箱拦下，用 context.checkPermission 申请在沙箱外重新执行：
+   *   - 申请的工具调用是 { type: "toolCall", id: "sandbox-escalation", name: "bash", arguments: 原参数加上 sandbox: false }，
+   *     reason 是 SANDBOX_ESCALATION_REASON。这样也会走权限规则，比如规则禁止的命令不会去问用户
+   *   - 允许时不用沙箱重新执行，用重新执行的结果，content 第一行写「[沙箱里被拦下，经用户同意在沙箱外重新执行]」
+   *   - 不允许时返回沙箱里那次的结果，content 最后另起一行写「[沙箱拦下了这个操作，用户没有同意在沙箱外执行]」，
+   *     有理由的话在后面加上「：理由」
+   *   其他情况（执行成功、不是这个错误、没有 checkPermission）原样返回
    */
   async execute(args, context) {
     const { command, timeout_ms: requestedTimeout = BASH_DEFAULT_TIMEOUT_MS } = args;

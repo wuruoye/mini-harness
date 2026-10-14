@@ -282,8 +282,8 @@ function ask(query: string): Promise<string | undefined> {
   return nextLine();
 }
 
-/** 按规则判断；需要询问时在命令行里问用户 */
-async function checkPermission(call: ToolCallBlock): Promise<PermissionDecision> {
+/** 按规则判断；需要询问时在命令行里问用户。reason 是工具额外给出的说明，询问前先显示 */
+async function checkPermission(call: ToolCallBlock, reason?: string): Promise<PermissionDecision> {
   const action = applyMode(mode, evaluatePermission(rules, call.name, call.arguments), call.name, call.arguments, cwd);
   if (action === "allow") return { allowed: true };
   if (action === "deny") {
@@ -291,6 +291,7 @@ async function checkPermission(call: ToolCallBlock): Promise<PermissionDecision>
     return { allowed: false, reason: "权限规则禁止这个操作" };
   }
 
+  if (reason) console.log(styleText("yellow", `  ${reason}`));
   const subject = permissionSubject(call.name, call.arguments);
   const always = subject ? `本次会话都允许「${subject}」` : `本次会话都允许 ${call.name}`;
   const answer = await ask(
