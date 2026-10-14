@@ -1,6 +1,6 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fakeReply, text, thinking, toolCall } from "../ai/fake.ts";
@@ -85,6 +85,19 @@ describe("appendMessage 和 loadSession", () => {
     await pending;
   });
 
+  test("某次写入失败后，之后的追加还能正常写入", async () => {
+    const session = await createSession(base, "/write-error");
+    await appendMessage(session, user("一"));
+
+    // 把文件改成只读，让下一次写入失败
+    await chmod(session.file, 0o444);
+    await assert.rejects(appendMessage(session, user("写不进去")));
+    await chmod(session.file, 0o644);
+
+    await appendMessage(session, user("三"));
+    assert.deepEqual((await loadSession(session.file)).messages, [user("一"), user("三")]);
+  });
+
   test("跳过空行", async () => {
     const session = await createSession(base, "/blank");
     await appendMessage(session, user("一"));
@@ -101,6 +114,17 @@ describe("appendMessage 和 loadSession", () => {
     const loaded = await loadSession(session.file);
     assert.deepEqual(loaded.messages, [user("一")]);
 
+    await appendMessage(loaded, user("二"));
+    assert.deepEqual((await loadSession(session.file)).messages, [user("一"), user("二")]);
+  });
+
+  test("最后一行完整但没有换行时，恢复后仍能正常追加", async () => {
+    const session = await createSession(base, "/no-final-newline");
+    await appendMessage(session, user("一"));
+    const content = await readFile(session.file, "utf8");
+    await writeFile(session.file, content.slice(0, -1));
+
+    const loaded = await loadSession(session.file);
     await appendMessage(loaded, user("二"));
     assert.deepEqual((await loadSession(session.file)).messages, [user("一"), user("二")]);
   });
