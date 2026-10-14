@@ -28,6 +28,8 @@ export type AgentEvent =
   /** 工具调用执行完。result 和随后加入历史的工具结果一致，isError 已经补全 */
   | { type: "toolEnd"; toolCall: ToolCallBlock; result: Required<ToolResult> };
 
+export type PermissionDecision = { allowed: true } | { allowed: false; reason?: string };
+
 export interface AgentOptions {
   provider: Provider;
   system: string;
@@ -36,6 +38,11 @@ export interface AgentOptions {
   /** 最多请求模型几次，默认 DEFAULT_MAX_TURNS */
   maxTurns?: number;
   onEvent?: (event: AgentEvent) => void;
+  /**
+   * 执行每个工具调用之前调用，决定是否允许；不传就全部允许。
+   * 怎么判断、要不要询问用户，由调用方（比如命令行界面）实现，主循环只等结果
+   */
+  checkPermission?: (toolCall: ToolCallBlock) => Promise<PermissionDecision>;
 }
 
 export interface AgentResult {

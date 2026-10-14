@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeProvider, fakeReply, text, thinking, toolCall } from "../ai/fake.ts";
-import type { Message, ToolResultMessage, UserMessage } from "../ai/types.ts";
+import type { Message, ToolCallBlock, ToolResultMessage, UserMessage } from "../ai/types.ts";
 import { runAgent } from "./loop.ts";
-import type { AgentEvent, AgentOptions, Tool, ToolContext } from "./types.ts";
+import type { AgentEvent, AgentOptions, PermissionDecision, Tool, ToolContext } from "./types.ts";
 
 function user(content: string): UserMessage {
   return { role: "user", content };
@@ -194,4 +194,88 @@ test("事件按顺序发出", async () => {
     { type: "message", message: toolResult("1", "echo", "x") },
     { type: "message", message: final },
   ]);
+});
+
+/** 记录被执行过的调用的工具 */
+function recordingTool(name: string, calls: string[]): Tool {
+  return {
+    definition: { name, description: "", parameters: { type: "object", properties: {} } },
+    async execute() {
+      calls.push(name);
+      return { content: `${name} 执行了` };
+    },
+  };
+}
+
+test("权限：不允许时不执行工具，返回带理由的错误结果，循环继续", async () => {
+  const executed: string[] = [];
+  const provider = new FakeProvider([fakeReply([toolCall("1", "danger")]), fakeReply([text("好，换个办法")])]);
+  const result = await runAgent([user("x")], options(provider, {
+    tools: [recordingTool("danger", executed)],
+    checkPermission: async () => ({ allowed: false, reason: "不要动生产环境" }),
+  }));
+
+  assert.deepEqual(executed, []);
+  const r = result.messages[2];
+  assert.ok(r?.role === "toolResult");
+  assert.equal(r.isError, true);
+  assert.match(r.content, /拒绝/);
+  assert.match(r.content, /不要动生产环境/);
+  assert.equal(provider.requests.length, 2);
+});
+
+test("权限：没有理由时也返回拒绝的错误结果", async () => {
+  const provider = new FakeProvider([fakeReply([toolCall("1", "danger")]), fakeReply([text("ok")])]);
+  const result = await runAgent([user("x")], options(provider, {
+    tools: [recordingTool("danger", [])],
+    checkPermission: async () => ({ allowed: false }),
+  }));
+  const r = result.messages[2];
+  assert.ok(r?.role === "toolResult");
+  assert.equal(r.isError, true);
+  assert.match(r.content, /拒绝/);
+});
+
+test("权限：允许时正常执行，checkPermission 收到的是这次的工具调用", async () => {
+  const executed: string[] = [];
+  const asked: ToolCallBlock[] = [];
+  const call = toolCall("1", "safe", { a: 1 });
+  const provider = new FakeProvider([fakeReply([call]), fakeReply([text("ok")])]);
+  await runAgent([user("x")], options(provider, {
+    tools: [recordingTool("safe", executed)],
+    checkPermission: async (toolCall): Promise<PermissionDecision> => {
+      asked.push(toolCall);
+      return { allowed: true };
+    },
+  }));
+  assert.deepEqual(executed, ["safe"]);
+  assert.deepEqual(asked, [call]);
+});
+
+test("权限：找不到的工具直接报错，不询问", async () => {
+  let asked = 0;
+  const provider = new FakeProvider([fakeReply([toolCall("1", "no_such_tool")]), fakeReply([text("ok")])]);
+  await runAgent([user("x")], options(provider, {
+    checkPermission: async () => {
+      asked++;
+      return { allowed: true };
+    },
+  }));
+  assert.equal(asked, 0);
+});
+
+test("权限：先发 toolStart 事件，再询问权限，最后发 toolEnd", async () => {
+  const order: string[] = [];
+  const provider = new FakeProvider([fakeReply([toolCall("1", "danger")]), fakeReply([text("ok")])]);
+  await runAgent([user("x")], options(provider, {
+    tools: [recordingTool("danger", [])],
+    onEvent: (event) => {
+      if (event.type !== "message") order.push(event.type);
+    },
+    checkPermission: async () => {
+      order.push("checkPermission");
+      return { allowed: false };
+    },
+  }));
+  assert.deepEqual(order, ["toolStart", "checkPermission", "toolEnd"]);
 });

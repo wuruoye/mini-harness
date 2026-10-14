@@ -7,16 +7,22 @@ import { styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
-import type { AssistantMessage, Message, Provider, Usage } from "./ai/types.ts";
+import type { AssistantMessage, Message, Provider, ToolCallBlock, Usage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
-import type { AgentEvent } from "./agent/types.ts";
+import { DEFAULT_RULES, evaluatePermission, permissionSubject, type PermissionRule } from "./agent/permission.ts";
+import type { AgentEvent, PermissionDecision } from "./agent/types.ts";
+import { bashTool } from "./tools/bash.ts";
+import { editTool } from "./tools/edit.ts";
 import { readFileTool } from "./tools/read-file.ts";
+import { writeFileTool } from "./tools/write-file.ts";
 import { loadProjectEnv } from "./env.ts";
 
 loadProjectEnv();
 
 const SYSTEM_PROMPT = `你是一个编程助手，在用户的项目目录里工作。
 需要了解代码时，用工具读取文件，不要猜测文件内容。
+修改已有文件用 edit，新建文件用 write_file，运行命令用 bash。改完代码后，能运行测试就运行测试确认。
+用户拒绝某个操作时，按用户给的理由调整做法，不要换个方式重试同一件事。
 回答使用中文，简洁直接。`;
 
 const EFFORTS: AnthropicEffort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -90,7 +96,9 @@ function createProvider(): { provider: Provider; model: string } {
 }
 
 const { provider, model } = createProvider();
-const tools = [readFileTool];
+const tools = [readFileTool, bashTool, editTool, writeFileTool];
+// 本次会话的权限规则；回答「本次会话都允许」时会往后追加
+const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
 
 function preview(text: string, max = 120): string {
@@ -138,25 +146,74 @@ const rl = createInterface({ input: process.stdin, output: process.stdout, promp
 // 第 6 个里程碑再做中断，现在按 Ctrl-C 直接退出
 rl.on("SIGINT", () => process.exit(130));
 
-// 模型回复期间按 Ctrl-D（或管道输入读完）时 readline 已经关闭，不能再显示提示符
+// 所有输入行进同一个队列，主循环读问题、权限询问读回答，都按顺序从这里取。
+// 这样运行中提前输入的内容，或者管道一次送进来的多行，都不会被读错位置
+const pendingLines: string[] = [];
+const waiting: ((line: string | undefined) => void)[] = [];
+// 按 Ctrl-D（或管道输入读完）后 readline 关闭，之后读不到新的行
 let closed = false;
+rl.on("line", (line) => {
+  const resolve = waiting.shift();
+  if (resolve) resolve(line);
+  else pendingLines.push(line);
+});
 rl.on("close", () => {
   closed = true;
+  for (const resolve of waiting.splice(0)) resolve(undefined);
 });
+
+/** 取下一行输入；输入已经关闭且没有剩余时返回 undefined */
+function nextLine(): Promise<string | undefined> {
+  if (pendingLines.length > 0) return Promise.resolve(pendingLines.shift());
+  if (closed) return Promise.resolve(undefined);
+  return new Promise((resolve) => waiting.push(resolve));
+}
+
+/** 显示问题，读用户的回答 */
+function ask(query: string): Promise<string | undefined> {
+  process.stdout.write(query);
+  return nextLine();
+}
+
+/** 按规则判断；需要询问时在命令行里问用户 */
+async function checkPermission(call: ToolCallBlock): Promise<PermissionDecision> {
+  const action = evaluatePermission(rules, call.name, call.arguments);
+  if (action === "allow") return { allowed: true };
+  if (action === "deny") {
+    console.log(styleText("red", "  权限规则禁止这个操作，已拒绝"));
+    return { allowed: false, reason: "权限规则禁止这个操作" };
+  }
+
+  const subject = permissionSubject(call.name, call.arguments);
+  const always = subject ? `本次会话都允许「${subject}」` : `本次会话都允许 ${call.name}`;
+  const answer = await ask(
+    styleText("yellow", `  需要确认：[y] 允许  [a] ${always}  [n] 拒绝，或者直接输入拒绝的理由\n  `) + "> ",
+  );
+  if (answer === undefined) return { allowed: false, reason: "没有办法向用户确认" };
+
+  const reply = answer.trim();
+  if (reply === "y") return { allowed: true };
+  if (reply === "a") {
+    rules.push({ tool: call.name, ...(subject && { pattern: subject }), action: "allow" });
+    return { allowed: true };
+  }
+  if (reply === "" || reply === "n") return { allowed: false };
+  return { allowed: false, reason: reply };
+}
+
 function prompt(): void {
   if (!closed) rl.prompt();
 }
 
 console.log(styleText("dim", `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出。`));
-prompt();
 
-for await (const line of rl) {
+while (true) {
+  prompt();
+  const line = await nextLine();
+  if (line === undefined) break;
   const input = line.trim();
   if (input === "/exit") break;
-  if (input === "") {
-    prompt();
-    continue;
-  }
+  if (input === "") continue;
 
   try {
     const result = await runAgent([...history, { role: "user", content: input }], {
@@ -165,6 +222,7 @@ for await (const line of rl) {
       tools,
       cwd,
       onEvent: printEvent,
+      checkPermission,
     });
     const added = result.messages.slice(history.length);
     history = result.messages;
@@ -178,7 +236,6 @@ for await (const line of rl) {
     // 这一轮的输入不进历史，下次重新输入即可
     console.error(styleText("red", `出错了：${err instanceof Error ? err.message : String(err)}`));
   }
-  prompt();
 }
 
 rl.close();

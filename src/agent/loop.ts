@@ -8,6 +8,9 @@ export const DEFAULT_MAX_TURNS = 20;
  * 请求模型并按顺序执行工具调用，直到模型停止或达到 maxTurns。
  *
  * - 不修改传入的历史；工具错误作为结果交回模型。
+ * - 待实现：传了 checkPermission 时，找到工具之后、执行之前先调用它；不允许时不执行，
+ *   返回 isError 为 true 的工具结果，内容说明用户拒绝了这次调用，有理由的话带上理由，循环继续。
+ *   找不到的工具直接报错，不用询问权限。
  * - 最后一轮也执行完工具调用，避免历史留下没有结果的 toolCall，影响后续请求。
  */
 export async function runAgent(messages: Message[], options: AgentOptions): Promise<AgentResult> {
