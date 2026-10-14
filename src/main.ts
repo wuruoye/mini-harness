@@ -4,7 +4,8 @@ import { createInterface } from "node:readline";
 import { styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
-import type { AssistantMessage, Message, Usage } from "./ai/types.ts";
+import { OpenAIProvider } from "./ai/openai.ts";
+import type { AssistantMessage, Message, Provider, Usage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
 import type { AgentEvent } from "./agent/types.ts";
 import { readFileTool } from "./tools/read-file.ts";
@@ -20,21 +21,45 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-const apiKey = process.env.ANTHROPIC_API_KEY;
-if (!apiKey) fail("缺少环境变量 ANTHROPIC_API_KEY。可以写进项目根目录的 .env 文件，格式见 .env.example");
+/** 根据 LLM_PROVIDER 选择厂商，返回 provider 和用于显示的模型名 */
+function createProvider(): { provider: Provider; model: string } {
+  const name = process.env.LLM_PROVIDER || "anthropic";
 
-const model = process.env.ANTHROPIC_MODEL || "claude-opus-5-5";
-const effort = process.env.ANTHROPIC_EFFORT || undefined;
-if (effort !== undefined && !EFFORTS.includes(effort as AnthropicEffort)) {
-  fail(`ANTHROPIC_EFFORT 只能是 ${EFFORTS.join("、")} 之一，现在是 ${effort}`);
+  if (name === "anthropic") {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) fail("缺少环境变量 ANTHROPIC_API_KEY。可以写进项目根目录的 .env 文件，格式见 .env.example");
+    const model = process.env.ANTHROPIC_MODEL || "claude-opus-5-5";
+    const effort = process.env.ANTHROPIC_EFFORT || undefined;
+    if (effort !== undefined && !EFFORTS.includes(effort as AnthropicEffort)) {
+      fail(`ANTHROPIC_EFFORT 只能是 ${EFFORTS.join("、")} 之一，现在是 ${effort}`);
+    }
+    const provider = new AnthropicProvider({
+      apiKey,
+      model,
+      baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
+      effort: effort as AnthropicEffort | undefined,
+    });
+    return { provider, model: `anthropic ${model}` };
+  }
+
+  if (name === "openai") {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) fail("缺少环境变量 OPENAI_API_KEY。可以写进项目根目录的 .env 文件，格式见 .env.example");
+    const model = process.env.OPENAI_MODEL;
+    if (!model) fail("缺少环境变量 OPENAI_MODEL。可以先运行 pnpm explore:openai --models 查看能用的模型");
+    const provider = new OpenAIProvider({
+      apiKey,
+      model,
+      baseUrl: process.env.OPENAI_BASE_URL || undefined,
+      reasoningEffort: process.env.OPENAI_REASONING_EFFORT || undefined,
+    });
+    return { provider, model: `openai ${model}` };
+  }
+
+  fail(`LLM_PROVIDER 只能是 anthropic 或 openai，现在是 ${name}`);
 }
 
-const provider = new AnthropicProvider({
-  apiKey,
-  model,
-  baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
-  effort: effort as AnthropicEffort | undefined,
-});
+const { provider, model } = createProvider();
 const tools = [readFileTool];
 const cwd = process.cwd();
 

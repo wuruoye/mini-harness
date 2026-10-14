@@ -18,11 +18,13 @@ pnpm check       # 类型检查加测试
 
 ## 运行
 
-把 `.env.example` 复制为 `.env`，填上 `ANTHROPIC_API_KEY`，然后运行：
+把 `.env.example` 复制为 `.env`，填上要用的那家的 key，然后运行：
 
 ```bash
 pnpm start
 ```
+
+`LLM_PROVIDER` 决定用哪家，默认 `anthropic`，设为 `openai` 时用 OpenAI 格式的接口，改 `OPENAI_BASE_URL` 就能接兼容 OpenAI 的其他服务。
 
 这时工作目录是 mini-harness 本身。要让它操作别的项目，进入那个项目的目录后运行：
 
@@ -34,15 +36,18 @@ node --env-file=$HOME/Documents/github/mini-harness/.env $HOME/Documents/github/
 
 ## 观察 API 原始响应
 
-输入问题后直接请求 Anthropic API，打印原始的流式事件并保存到 `tmp/`，不经过适配器和主循环。每个问题都是独立的一次请求：
+输入问题后直接请求 API，打印原始的流式数据并保存到 `tmp/`，不经过适配器和主循环。每个问题都是独立的一次请求：
 
 ```bash
-pnpm explore                           # 交互模式，逐条输入问题
-pnpm explore 用一句话介绍你自己          # 只问这一句
-pnpm explore --tool 读一下 package.json  # 带上 read_file 工具定义
+pnpm explore:anthropic --models                    # 列出这个 key 能用的模型
+pnpm explore:anthropic                             # 交互模式，逐条输入问题
+pnpm explore:anthropic 用一句话介绍你自己            # 只问这一句
+pnpm explore:anthropic --tool 读一下 package.json    # 带上 read_file 工具定义
 ```
 
-把保存的文件交给 `readAnthropicStream` 解析，调试时不用反复请求 API：
+`pnpm explore:openai` 的用法相同。
+
+把保存的文件交给适配器的解析函数，调试时不用反复请求 API。文件名以 `openai-` 开头的交给 OpenAI 适配器，其余交给 Anthropic 适配器：
 
 ```bash
 pnpm replay tmp/anthropic-xxx.sse
@@ -56,7 +61,7 @@ pnpm replay tmp/anthropic-xxx.sse
 |---|---|
 | `src/main.ts` | 命令行入口 |
 | `scripts/` | 观察和回放 API 原始响应的脚本 |
-| `src/ai/` | 模型接入层：统一消息类型、SSE 解析、Anthropic 适配器、测试用的假模型 |
+| `src/ai/` | 模型接入层：统一消息类型、SSE 解析、Anthropic 和 OpenAI 适配器、测试用的假模型 |
 | `src/agent/` | 主循环和工具接口 |
 | `src/tools/` | 各个工具 |
 | `docs/plan.md` | 方案、分工、里程碑和参考代码 |

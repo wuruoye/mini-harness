@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "观察 API 响应",
+      "name": "观察 Anthropic 响应",
       "type": "node",
       "request": "launch",
       "program": "${workspaceFolder}/scripts/explore-anthropic.ts",
@@ -15,7 +15,7 @@
       ]
     },
     {
-      "name": "观察 API 响应：带工具",
+      "name": "观察 Anthropic 响应：带工具",
       "type": "node",
       "request": "launch",
       "program": "${workspaceFolder}/scripts/explore-anthropic.ts",
@@ -30,10 +30,38 @@
       ]
     },
     {
+      "name": "观察 OpenAI 响应",
+      "type": "node",
+      "request": "launch",
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "program": "${workspaceFolder}/scripts/explore-openai.ts",
+      "args": []
+    },
+    {
+      "name": "观察 OpenAI 响应：带工具",
+      "type": "node",
+      "request": "launch",
+      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "program": "${workspaceFolder}/scripts/explore-openai.ts",
+      "args": [
+        "--tool"
+      ]
+    },
+    {
       "name": "回放当前打开的 .sse 文件",
       "type": "node",
       "request": "launch",
-      "program": "${workspaceFolder}/scripts/replay-anthropic.ts",
+      "program": "${workspaceFolder}/scripts/replay.ts",
       "args": [
         "${file}"
       ],

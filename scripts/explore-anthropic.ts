@@ -2,9 +2,10 @@
 // 不经过适配器和主循环，用来观察 API 的真实响应。每个问题都是一次独立的请求，不带历史。
 //
 // 用法（在 mini-harness 目录下）：
-//   pnpm explore                               交互模式，逐条输入问题
-//   pnpm explore 用一句话介绍你自己              只问这一句
-//   pnpm explore --tool 读一下 package.json      带上 read_file 工具定义，观察模型怎么发起工具调用
+//   pnpm explore:anthropic --models                       列出这个 key 能用的模型
+//   pnpm explore:anthropic                                交互模式，逐条输入问题
+//   pnpm explore:anthropic 用一句话介绍你自己               只问这一句
+//   pnpm explore:anthropic --tool 读一下 package.json       带上 read_file 工具定义，观察模型怎么发起工具调用
 //
 // 想观察别的情况，直接改 buildBody 里的请求体；想逐个看事件，在 for await 循环里打断点。
 
@@ -22,10 +23,31 @@ const model = process.env.ANTHROPIC_MODEL || "claude-opus-5-5";
 const baseUrl = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com/v1";
 
 const { values, positionals } = parseArgs({
-  options: { tool: { type: "boolean", default: false } },
+  options: {
+    tool: { type: "boolean", default: false },
+    models: { type: "boolean", default: false },
+  },
   allowPositionals: true,
 });
 const withTool = values.tool;
+
+if (values.models) {
+  const response = await fetch(`${baseUrl}/models?limit=1000`, {
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+  });
+  console.log(styleText("dim", `GET ${baseUrl}/models → HTTP ${response.status}`));
+  if (!response.ok) {
+    console.log(await response.text());
+    process.exit(1);
+  }
+  type ModelInfo = { id: string; display_name?: string; created_at?: string; max_input_tokens?: number; max_tokens?: number };
+  const list = (await response.json()) as { data: ModelInfo[] };
+  for (const m of list.data) {
+    const limits = m.max_input_tokens ? `上下文 ${m.max_input_tokens}，最多输出 ${m.max_tokens}` : "";
+    console.log(`${m.id.padEnd(32)} ${styleText("dim", `${m.display_name ?? ""}  ${m.created_at?.slice(0, 10) ?? ""}  ${limits}`)}`);
+  }
+  process.exit(0);
+}
 
 const readFileTool = {
   name: "read_file",

@@ -9,8 +9,9 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
-    "explore": "node --env-file-if-exists=.env scripts/explore-anthropic.ts",
-    "replay": "node scripts/replay-anthropic.ts",
+    "explore:anthropic": "node --env-file-if-exists=.env scripts/explore-anthropic.ts",
+    "explore:openai": "node --env-file-if-exists=.env scripts/explore-openai.ts",
+    "replay": "node scripts/replay.ts",
     "test": "node --test",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test"
