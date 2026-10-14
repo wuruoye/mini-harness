@@ -1,5 +1,7 @@
 // 工具调用的权限规则，参考 opencode：每条规则是「工具 + 匹配模式 → 放行、询问或拒绝」。
 
+import { isAbsolute, relative, resolve, sep } from "node:path";
+
 export type PermissionAction = "allow" | "ask" | "deny";
 
 export interface PermissionRule {
@@ -89,7 +91,10 @@ export function isPermissionMode(value: string): value is PermissionMode {
  * 也不能简单看相对路径是否以 .. 开头：名字叫 ..notes.txt 的文件就在 cwd 里面。
  */
 export function isInside(cwd: string, path: unknown): boolean {
-  throw new Error("未实现");
+  if (typeof path !== "string" || path === "") return false;
+  const base = resolve(cwd);
+  const fromCwd = relative(base, resolve(base, path));
+  return fromCwd !== ".." && !fromCwd.startsWith(`..${sep}`) && !isAbsolute(fromCwd);
 }
 
 /**
@@ -107,5 +112,10 @@ export function applyMode(
   args: Record<string, unknown>,
   cwd: string,
 ): PermissionAction {
-  throw new Error("未实现");
+  if (mode === "bypass") return "allow";
+  if (action !== "ask") return action;
+
+  if (toolName === "bash" && args.sandbox !== false) return "allow";
+  if (["read_file", "edit", "write_file"].includes(toolName) && isInside(cwd, args.path)) return "allow";
+  return action;
 }

@@ -17,7 +17,7 @@ export async function runAgent(messages: Message[], options: AgentOptions): Prom
 
   const toolMap = new Map<string, Tool>(tools.map((t) => [t.definition.name, t]));
   const toolDefs = tools.map((t) => t.definition);
-  const context = { cwd };
+  const context = { cwd, sandbox: options.sandbox };
   const history: Message[] = [...messages];
   let turns = 0;
 

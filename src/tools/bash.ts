@@ -34,7 +34,7 @@ export const bashTool: Tool = {
    * - content 是命令输出，后面另起一行注明结果：正常退出写「[退出码 N]」；
    *   超时写「[超时，已在 N 毫秒后结束]」；被其他信号结束写「[被信号 X 结束]」
    * - 退出码不为 0、超时、被信号结束时，isError 为 true
-   * - 待实现：context.sandbox 有值，并且 args.sandbox 不是 false 时，把 context.sandbox 传给 runCommand，
+   * - context.sandbox 有值，并且 args.sandbox 不是 false 时，把 context.sandbox 传给 runCommand，
    *   在沙箱里执行；其他情况不用沙箱
    */
   async execute(args, context) {
@@ -51,6 +51,7 @@ export const bashTool: Tool = {
       cwd: context.cwd,
       timeoutMs,
       maxOutputChars: BASH_MAX_OUTPUT_CHARS,
+      sandbox: args.sandbox === false ? undefined : context.sandbox,
     });
     const status = result.timedOut
       ? `[超时，已在 ${timeoutMs} 毫秒后结束]`
