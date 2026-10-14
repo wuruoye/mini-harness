@@ -1,16 +1,73 @@
-import type { Message } from "../ai/types.ts";
-import type { AgentOptions, AgentResult } from "./types.ts";
+import type { Message, ToolCallBlock, ToolResultMessage } from "../ai/types.ts";
+import type { AgentOptions, AgentResult, Tool, ToolResult } from "./types.ts";
 
+/** 模型最多请求次数的默认值，防止无限循环 */
 export const DEFAULT_MAX_TURNS = 20;
 
 /**
- * 主循环：请求模型 → 执行回复里的工具调用 → 把结果加进历史 → 再请求，直到模型不再调用工具。
+ * 请求模型并按顺序执行工具调用，直到模型停止或达到 maxTurns。
  *
- * - messages 是已有的历史，最后一条通常是用户消息。不要修改这个数组
- * - assistant 消息里有 toolCall 块就按顺序执行，全部结果加进历史后再请求下一次；没有就结束
- * - 找不到工具、工具抛异常，都转成 isError 为 true 的工具结果，循环继续
- * - 请求次数达到 maxTurns 时，执行完这一轮的工具调用就停下，stopReason 为 "maxTurns"
+ * - 不修改传入的历史；工具错误作为结果交回模型。
+ * - 最后一轮也执行完工具调用，避免历史留下没有结果的 toolCall，影响后续请求。
  */
 export async function runAgent(messages: Message[], options: AgentOptions): Promise<AgentResult> {
-  throw new Error("未实现");
+  const { provider, system, tools, cwd, onEvent, maxTurns = DEFAULT_MAX_TURNS } = options;
+
+  const toolMap = new Map<string, Tool>(tools.map((t) => [t.definition.name, t]));
+  const toolDefs = tools.map((t) => t.definition);
+  const context = { cwd };
+  const history: Message[] = [...messages];
+  let turns = 0;
+
+  while (turns < maxTurns) {
+    turns++;
+
+    const assistant = await provider.complete({ system, messages: history, tools: toolDefs });
+    history.push(assistant);
+    onEvent?.({ type: "message", message: assistant });
+
+    const calls = assistant.content.filter((b): b is ToolCallBlock => b.type === "toolCall");
+
+    if (calls.length === 0) {
+      return { messages: history, stopReason: assistant.stopReason };
+    }
+
+    for (const call of calls) {
+      onEvent?.({ type: "toolStart", toolCall: call });
+
+      let result: Required<ToolResult>;
+      const tool = toolMap.get(call.name);
+
+      if (!tool) {
+        // 模型可能拼错工具名，列出可用工具方便重试。
+        result = {
+          content: `找不到工具：${call.name}。可用工具：${[...toolMap.keys()].join("、") || "无"}`,
+          isError: true,
+        };
+      } else {
+        try {
+          const raw = await tool.execute(call.arguments, context);
+          result = { content: raw.content, isError: raw.isError ?? false };
+        } catch (err) {
+          // JS 可以抛出任意值，取 message 前先确认是 Error。
+          const message = err instanceof Error ? err.message : String(err);
+          result = { content: message, isError: true };
+        }
+      }
+
+      onEvent?.({ type: "toolEnd", toolCall: call, result });
+
+      const toolResultMsg: ToolResultMessage = {
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: result.content,
+        isError: result.isError,
+      };
+      history.push(toolResultMsg);
+      onEvent?.({ type: "message", message: toolResultMsg });
+    }
+  }
+
+  return { messages: history, stopReason: "maxTurns" };
 }

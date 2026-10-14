@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { Tool } from "../agent/types.ts";
 
 /** 单次最多返回的字符数，超出部分截断，避免一个大文件占满上下文 */
@@ -17,13 +19,28 @@ export const readFileTool: Tool = {
     },
   },
 
-  /**
-   * - path 缺失或不是字符串时抛异常，错误信息里要提到 path
-   * - 相对路径按 context.cwd 解析
-   * - 读取失败（比如文件不存在）直接抛异常
-   * - 超过 MAX_READ_CHARS 时只保留前 MAX_READ_CHARS 个字符，并在后面注明已截断
-   */
   async execute(args, context) {
-    throw new Error("未实现");
+    const { path: rawPath } = args;
+    // 空路径会被 resolve 解析为工作目录，需要在读取前拒绝。
+    if (typeof rawPath !== "string" || rawPath === "") {
+      throw new Error("path 必须是非空字符串");
+    }
+
+    const fullPath = resolve(context.cwd, rawPath);
+
+    // 部分文件系统错误不含路径，补上路径方便定位。
+    let content: string;
+    try {
+      content = await readFile(fullPath, "utf-8");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`读取文件失败（${fullPath}）：${message}`);
+    }
+
+    if (content.length > MAX_READ_CHARS) {
+      content = content.slice(0, MAX_READ_CHARS) + `\n\n[内容已截断，仅显示前 ${MAX_READ_CHARS} 个字符，文件共 ${content.length} 个字符]`;
+    }
+
+    return { content };
   },
 };
