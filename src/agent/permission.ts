@@ -27,12 +27,14 @@ export const DEFAULT_RULES: PermissionRule[] = [
  * 正则表达式里的特殊字符（比如 . ( + ?）没有特殊含义；要求整个 text 从头到尾都匹配上。
  */
 export function matchPattern(pattern: string, text: string): boolean {
-  throw new Error("未实现");
+  const source = pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp("^" + source + "$", "s").test(text);
 }
 
 /** 权限规则要匹配的内容：bash 取参数 command，其他工具取参数 path；参数不存在或不是字符串时为空字符串 */
 export function permissionSubject(toolName: string, args: Record<string, unknown>): string {
-  throw new Error("未实现");
+  const subject = toolName === "bash" ? args.command : args.path;
+  return typeof subject === "string" ? subject : "";
 }
 
 /**
@@ -49,5 +51,17 @@ export function evaluatePermission(
   toolName: string,
   args: Record<string, unknown>,
 ): PermissionAction {
-  throw new Error("未实现");
+  const subject = permissionSubject(toolName, args);
+  let action: PermissionAction = "ask";
+
+  for (const rule of rules) {
+    if (matchPattern(rule.tool, toolName) && (rule.pattern === undefined || matchPattern(rule.pattern, subject))) {
+      action = rule.action;
+    }
+  }
+
+  if (toolName === "bash" && action === "allow" && /[;&|`><\r\n]|\$\(/.test(subject)) {
+    return "ask";
+  }
+  return action;
 }

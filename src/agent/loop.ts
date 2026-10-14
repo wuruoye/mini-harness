@@ -8,13 +8,12 @@ export const DEFAULT_MAX_TURNS = 20;
  * 请求模型并按顺序执行工具调用，直到模型停止或达到 maxTurns。
  *
  * - 不修改传入的历史；工具错误作为结果交回模型。
- * - 待实现：传了 checkPermission 时，找到工具之后、执行之前先调用它；不允许时不执行，
- *   返回 isError 为 true 的工具结果，内容说明用户拒绝了这次调用，有理由的话带上理由，循环继续。
+ * - 找到工具后、执行前调用 checkPermission；拒绝时作为错误结果返回，循环继续。
  *   找不到的工具直接报错，不用询问权限。
  * - 最后一轮也执行完工具调用，避免历史留下没有结果的 toolCall，影响后续请求。
  */
 export async function runAgent(messages: Message[], options: AgentOptions): Promise<AgentResult> {
-  const { provider, system, tools, cwd, onEvent, maxTurns = DEFAULT_MAX_TURNS } = options;
+  const { provider, system, tools, cwd, onEvent, checkPermission, maxTurns = DEFAULT_MAX_TURNS } = options;
 
   const toolMap = new Map<string, Tool>(tools.map((t) => [t.definition.name, t]));
   const toolDefs = tools.map((t) => t.definition);
@@ -49,8 +48,16 @@ export async function runAgent(messages: Message[], options: AgentOptions): Prom
         };
       } else {
         try {
-          const raw = await tool.execute(call.arguments, context);
-          result = { content: raw.content, isError: raw.isError ?? false };
+          const decision = await checkPermission?.(call);
+          if (decision && !decision.allowed) {
+            result = {
+              content: `用户拒绝了这次工具调用${decision.reason ? `：${decision.reason}` : ""}`,
+              isError: true,
+            };
+          } else {
+            const raw = await tool.execute(call.arguments, context);
+            result = { content: raw.content, isError: raw.isError ?? false };
+          }
         } catch (err) {
           // JS 可以抛出任意值，取 message 前先确认是 Error。
           const message = err instanceof Error ? err.message : String(err);

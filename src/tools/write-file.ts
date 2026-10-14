@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import type { Tool } from "../agent/types.ts";
 
 export const writeFileTool: Tool = {
@@ -21,6 +23,31 @@ export const writeFileTool: Tool = {
    * - 返回的 content 说明写了哪个文件、多少个字符，以及是新建还是覆盖
    */
   async execute(args, context) {
-    throw new Error("未实现");
+    const { path: rawPath, content } = args;
+    if (typeof rawPath !== "string" || rawPath === "") {
+      throw new Error("path 必须是非空字符串");
+    }
+    if (typeof content !== "string") {
+      throw new Error("content 必须是字符串");
+    }
+
+    const fullPath = resolve(context.cwd, rawPath);
+    let created = true;
+    try {
+      await mkdir(dirname(fullPath), { recursive: true });
+      try {
+        // 先尝试独占创建，根据 EEXIST 区分新建和覆盖。
+        await writeFile(fullPath, content, { encoding: "utf8", flag: "wx" });
+      } catch (err) {
+        if (!(err instanceof Error) || !("code" in err) || err.code !== "EEXIST") throw err;
+        await writeFile(fullPath, content, "utf8");
+        created = false;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`写入文件失败（${fullPath}）：${message}`);
+    }
+
+    return { content: `已${created ? "新建" : "覆盖"}文件 ${fullPath}，共 ${content.length} 个字符` };
   },
 };

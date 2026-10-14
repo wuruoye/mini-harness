@@ -1,4 +1,5 @@
 import type { Tool } from "../agent/types.ts";
+import { runCommand } from "./process.ts";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
 export const BASH_MAX_TIMEOUT_MS = 600_000;
@@ -32,6 +33,29 @@ export const bashTool: Tool = {
    * - 退出码不为 0、超时、被信号结束时，isError 为 true
    */
   async execute(args, context) {
-    throw new Error("未实现");
+    const { command, timeout_ms: requestedTimeout = BASH_DEFAULT_TIMEOUT_MS } = args;
+    if (typeof command !== "string" || command.trim() === "") {
+      throw new Error("command 必须是非空字符串");
+    }
+    if (typeof requestedTimeout !== "number" || !Number.isFinite(requestedTimeout) || requestedTimeout <= 0) {
+      throw new Error("timeout_ms 必须是有限正数");
+    }
+
+    const timeoutMs = Math.min(requestedTimeout, BASH_MAX_TIMEOUT_MS);
+    const result = await runCommand(command, {
+      cwd: context.cwd,
+      timeoutMs,
+      maxOutputChars: BASH_MAX_OUTPUT_CHARS,
+    });
+    const status = result.timedOut
+      ? `[超时，已在 ${timeoutMs} 毫秒后结束]`
+      : result.signal !== null
+        ? `[被信号 ${result.signal} 结束]`
+        : `[退出码 ${result.exitCode}]`;
+    const separator = result.output !== "" && !result.output.endsWith("\n") ? "\n" : "";
+    return {
+      content: result.output + separator + status,
+      isError: result.exitCode !== 0 || result.timedOut || result.signal !== null,
+    };
   },
 };

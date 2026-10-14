@@ -1,3 +1,5 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { Tool } from "../agent/types.ts";
 
 export const editTool: Tool = {
@@ -30,6 +32,39 @@ export const editTool: Tool = {
    * - 写回文件；content 说明改了哪个文件、替换了几处
    */
   async execute(args, context) {
-    throw new Error("未实现");
+    const { path: rawPath, old_string: oldString, new_string: newString, replace_all: replaceAll = false } = args;
+    if (typeof rawPath !== "string" || rawPath === "") {
+      throw new Error("path 必须是非空字符串");
+    }
+    if (typeof oldString !== "string" || oldString === "") {
+      throw new Error("old_string 必须是非空字符串");
+    }
+    if (typeof newString !== "string") {
+      throw new Error("new_string 必须是字符串");
+    }
+    if (typeof replaceAll !== "boolean") {
+      throw new Error("replace_all 必须是布尔值");
+    }
+    if (oldString === newString) {
+      throw new Error("old_string 和 new_string 不能相同");
+    }
+
+    const fullPath = resolve(context.cwd, rawPath);
+    try {
+      const content = await readFile(fullPath, "utf8");
+      const parts = content.split(oldString);
+      const count = parts.length - 1;
+      if (count === 0) throw new Error("找不到 old_string 对应的原文");
+      if (count > 1 && !replaceAll) {
+        throw new Error(`old_string 出现 ${count} 次，请增加前后文或设置 replace_all`);
+      }
+
+      // join 会原样写入替换文本，避免把 $&、$1 当作替换模式。
+      await writeFile(fullPath, parts.join(newString), "utf8");
+      return { content: `已修改文件 ${fullPath}，替换 ${count} 处` };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`修改文件失败（${fullPath}）：${message}`);
+    }
   },
 };
