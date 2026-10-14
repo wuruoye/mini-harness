@@ -65,3 +65,50 @@ export function evaluatePermission(
   }
   return action;
 }
+
+/**
+ * 权限模式，在规则判断的结果上再做调整：
+ * - default：按规则来，不调整
+ * - acceptEdits：edit 和 write_file 改的是工作目录里的文件时不再询问
+ * - auto：需要询问的一律放行，规则禁止的仍然拒绝
+ * - bypass：跳过所有判断，包括规则禁止的操作
+ */
+export type PermissionMode = "default" | "acceptEdits" | "auto" | "bypass";
+
+export const PERMISSION_MODES: Record<PermissionMode, string> = {
+  default: "按规则放行、询问或拒绝",
+  acceptEdits: "工作目录里的文件修改不再询问，其他照常",
+  auto: "需要确认的操作自动放行，规则禁止的仍然拒绝",
+  bypass: "所有操作都不经确认直接执行，包括规则禁止的",
+};
+
+export function isPermissionMode(value: string): value is PermissionMode {
+  return Object.hasOwn(PERMISSION_MODES, value);
+}
+
+/**
+ * path 按 cwd 解析后，是否在 cwd 里面（cwd 自身也算）。
+ * path 不是非空字符串时返回 false。
+ * 不能用字符串前缀判断：cwd 为 /work 时，/work2/a.txt 不在里面；
+ * 也不能简单看相对路径是否以 .. 开头：名字叫 ..notes.txt 的文件就在 cwd 里面。
+ */
+export function isInside(cwd: string, path: unknown): boolean {
+  throw new Error("未实现");
+}
+
+/**
+ * 按模式调整规则判断的结果 action。
+ * - default：原样返回
+ * - acceptEdits：工具是 edit 或 write_file，并且参数 path 在 cwd 里面时，ask 变成 allow；deny 不变；其他情况原样返回
+ * - auto：ask 变成 allow，其他原样返回
+ * - bypass：一律 allow
+ */
+export function applyMode(
+  mode: PermissionMode,
+  action: PermissionAction,
+  toolName: string,
+  args: Record<string, unknown>,
+  cwd: string,
+): PermissionAction {
+  throw new Error("未实现");
+}

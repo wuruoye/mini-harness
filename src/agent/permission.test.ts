@@ -1,6 +1,16 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_RULES, evaluatePermission, matchPattern, permissionSubject, type PermissionRule } from "./permission.ts";
+import {
+  applyMode,
+  DEFAULT_RULES,
+  evaluatePermission,
+  isInside,
+  isPermissionMode,
+  matchPattern,
+  permissionSubject,
+  type PermissionAction,
+  type PermissionRule,
+} from "./permission.ts";
 
 describe("matchPattern", () => {
   test("* 匹配任意字符，包括没有字符", () => {
@@ -104,5 +114,82 @@ describe("evaluatePermission", () => {
     assert.equal(evaluatePermission(DEFAULT_RULES, "bash", bash("ls -la src")), "allow");
     assert.equal(evaluatePermission(DEFAULT_RULES, "bash", bash("npm install")), "ask");
     assert.equal(evaluatePermission(DEFAULT_RULES, "bash", bash("rm -rf /")), "deny");
+  });
+});
+
+describe("isInside", () => {
+  const cwd = "/work/project";
+
+  test("相对路径和工作目录里的绝对路径都算在里面", () => {
+    assert.equal(isInside(cwd, "src/a.ts"), true);
+    assert.equal(isInside(cwd, "./a.ts"), true);
+    assert.equal(isInside(cwd, "/work/project/src/a.ts"), true);
+    assert.equal(isInside(cwd, "."), true);
+  });
+
+  test("跳出工作目录的路径不算", () => {
+    assert.equal(isInside(cwd, "../other/a.ts"), false);
+    assert.equal(isInside(cwd, "src/../../a.ts"), false);
+    assert.equal(isInside(cwd, "/etc/hosts"), false);
+  });
+
+  test("名字以工作目录开头的兄弟目录不算", () => {
+    assert.equal(isInside(cwd, "/work/project2/a.ts"), false);
+    assert.equal(isInside(cwd, "../project2/a.ts"), false);
+  });
+
+  test("文件名以 .. 开头但在工作目录里面的算", () => {
+    assert.equal(isInside(cwd, "..notes.txt"), true);
+    assert.equal(isInside(cwd, "src/..hidden"), true);
+  });
+
+  test("path 不是非空字符串时不算", () => {
+    assert.equal(isInside(cwd, ""), false);
+    assert.equal(isInside(cwd, undefined), false);
+    assert.equal(isInside(cwd, 1), false);
+  });
+});
+
+describe("applyMode", () => {
+  const cwd = "/work/project";
+  const ACTIONS: PermissionAction[] = ["allow", "ask", "deny"];
+
+  test("isPermissionMode", () => {
+    assert.equal(isPermissionMode("auto"), true);
+    assert.equal(isPermissionMode("acceptEdits"), true);
+    assert.equal(isPermissionMode("yolo"), false);
+    assert.equal(isPermissionMode("toString"), false);
+  });
+
+  test("default：原样返回", () => {
+    for (const action of ACTIONS) {
+      assert.equal(applyMode("default", action, "bash", { command: "ls" }, cwd), action);
+      assert.equal(applyMode("default", action, "edit", { path: "a.ts" }, cwd), action);
+    }
+  });
+
+  test("auto：ask 变成 allow，deny 仍然是 deny", () => {
+    assert.equal(applyMode("auto", "ask", "bash", { command: "npm install" }, cwd), "allow");
+    assert.equal(applyMode("auto", "allow", "bash", { command: "ls" }, cwd), "allow");
+    assert.equal(applyMode("auto", "deny", "bash", { command: "rm -rf /" }, cwd), "deny");
+  });
+
+  test("bypass：一律 allow", () => {
+    for (const action of ACTIONS) {
+      assert.equal(applyMode("bypass", action, "bash", { command: "rm -rf /" }, cwd), "allow");
+    }
+  });
+
+  test("acceptEdits：工作目录里的 edit、write_file 不再询问", () => {
+    assert.equal(applyMode("acceptEdits", "ask", "edit", { path: "src/a.ts" }, cwd), "allow");
+    assert.equal(applyMode("acceptEdits", "ask", "write_file", { path: "/work/project/new.ts" }, cwd), "allow");
+  });
+
+  test("acceptEdits：工作目录外的文件、规则禁止的修改、其他工具都不变", () => {
+    assert.equal(applyMode("acceptEdits", "ask", "edit", { path: "../other.ts" }, cwd), "ask");
+    assert.equal(applyMode("acceptEdits", "ask", "write_file", { path: "/etc/hosts" }, cwd), "ask");
+    assert.equal(applyMode("acceptEdits", "deny", "edit", { path: "src/a.ts" }, cwd), "deny");
+    assert.equal(applyMode("acceptEdits", "ask", "bash", { command: "echo hi > a.txt" }, cwd), "ask");
+    assert.equal(applyMode("acceptEdits", "ask", "edit", {}, cwd), "ask");
   });
 });

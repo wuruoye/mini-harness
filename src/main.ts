@@ -3,13 +3,22 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { styleText } from "node:util";
+import { parseArgs, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
 import type { AssistantMessage, Message, Provider, ToolCallBlock, Usage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
-import { DEFAULT_RULES, evaluatePermission, permissionSubject, type PermissionRule } from "./agent/permission.ts";
+import {
+  applyMode,
+  DEFAULT_RULES,
+  evaluatePermission,
+  isPermissionMode,
+  PERMISSION_MODES,
+  permissionSubject,
+  type PermissionMode,
+  type PermissionRule,
+} from "./agent/permission.ts";
 import type { AgentEvent, PermissionDecision } from "./agent/types.ts";
 import { bashTool } from "./tools/bash.ts";
 import { editTool } from "./tools/edit.ts";
@@ -101,6 +110,30 @@ const tools = [readFileTool, bashTool, editTool, writeFileTool];
 const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
 
+/** 权限模式：启动参数 --mode 优先，其次是环境变量 MH_PERMISSION_MODE，都没有时为 default */
+function initialMode(): PermissionMode {
+  let fromArgs: string | undefined;
+  try {
+    fromArgs = parseArgs({ options: { mode: { type: "string" } } }).values.mode;
+  } catch (err) {
+    fail(`启动参数有误：${err instanceof Error ? err.message : String(err)}`);
+  }
+  // .env 里写了 MH_PERMISSION_MODE= 但没填值时，按没设置处理
+  const value = fromArgs ?? (process.env.MH_PERMISSION_MODE || "default");
+  if (!isPermissionMode(value)) {
+    fail(`权限模式只能是 ${Object.keys(PERMISSION_MODES).join("、")} 之一，现在是 ${value}`);
+  }
+  return value;
+}
+
+let mode = initialMode();
+
+function describeMode(): string {
+  const text = `权限模式 ${mode}：${PERMISSION_MODES[mode]}`;
+  if (mode === "bypass") return styleText("red", `${text}。建议只在容器或临时目录里这样用`);
+  return styleText("dim", text);
+}
+
 function preview(text: string, max = 120): string {
   const firstLine = text.split("\n", 1)[0] ?? "";
   return firstLine.length > max ? `${firstLine.slice(0, max)}…` : firstLine;
@@ -177,7 +210,7 @@ function ask(query: string): Promise<string | undefined> {
 
 /** 按规则判断；需要询问时在命令行里问用户 */
 async function checkPermission(call: ToolCallBlock): Promise<PermissionDecision> {
-  const action = evaluatePermission(rules, call.name, call.arguments);
+  const action = applyMode(mode, evaluatePermission(rules, call.name, call.arguments), call.name, call.arguments, cwd);
   if (action === "allow") return { allowed: true };
   if (action === "deny") {
     console.log(styleText("red", "  权限规则禁止这个操作，已拒绝"));
@@ -202,10 +235,13 @@ async function checkPermission(call: ToolCallBlock): Promise<PermissionDecision>
 }
 
 function prompt(): void {
+  // 不是默认模式时，在提示符前面标出来
+  rl.setPrompt(mode === "default" ? "> " : `[${mode}] > `);
   if (!closed) rl.prompt();
 }
 
-console.log(styleText("dim", `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出。`));
+console.log(styleText("dim", `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出，/mode 切换权限模式。`));
+console.log(describeMode());
 
 while (true) {
   prompt();
@@ -213,6 +249,20 @@ while (true) {
   if (line === undefined) break;
   const input = line.trim();
   if (input === "/exit") break;
+  if (input === "/mode" || input.startsWith("/mode ")) {
+    const next = input.slice("/mode".length).trim();
+    if (next === "") {
+      for (const [name, text] of Object.entries(PERMISSION_MODES)) {
+        console.log(`${name === mode ? "*" : " "} ${name.padEnd(12)} ${styleText("dim", text)}`);
+      }
+    } else if (isPermissionMode(next)) {
+      mode = next;
+      console.log(describeMode());
+    } else {
+      console.log(styleText("red", `没有这个模式：${next}。输入 /mode 查看所有模式`));
+    }
+    continue;
+  }
   if (input === "") continue;
 
   try {
