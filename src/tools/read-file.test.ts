@@ -44,6 +44,14 @@ test("path 缺失或不是字符串时抛异常，错误信息提到 path", asyn
   await assert.rejects(run({ path: 42 }), /\bpath\b/);
 });
 
+test("path 是空字符串时抛异常，错误信息提到 path", async () => {
+  await assert.rejects(run({ path: "" }), /\bpath\b/);
+});
+
+test("path 指向目录时抛异常，错误信息里有这个路径", async () => {
+  await assert.rejects(run({ path: "sub" }), /\bsub\b/);
+});
+
 test("超过 MAX_READ_CHARS 时截断并注明", async () => {
   const big = "a".repeat(MAX_READ_CHARS + 100);
   await writeFile(join(dir, "big.txt"), big);

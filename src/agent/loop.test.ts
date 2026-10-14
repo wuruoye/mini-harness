@@ -112,6 +112,25 @@ test("工具抛异常时返回错误结果，内容包含异常信息，循环�
   assert.equal(provider.requests.length, 2);
 });
 
+test("工具抛出的不是 Error 对象时，同样转成错误结果", async () => {
+  // JS 里 throw 后面可以跟任何值，catch 拿到的不一定是 Error
+  for (const thrown of [undefined, null, "字符串错误"]) {
+    const weird: Tool = {
+      definition: { name: "weird", description: "", parameters: { type: "object", properties: {} } },
+      async execute() {
+        throw thrown;
+      },
+    };
+    const provider = new FakeProvider([fakeReply([toolCall("1", "weird")]), fakeReply([text("ok")])]);
+    const result = await runAgent([user("x")], options(provider, { tools: [weird] }));
+
+    const r = result.messages[2];
+    assert.ok(r?.role === "toolResult", `throw ${String(thrown)}`);
+    assert.equal(r.isError, true);
+    if (typeof thrown === "string") assert.match(r.content, /字符串错误/);
+  }
+});
+
 test("工具收到的 context 里有 cwd", async () => {
   let seen: ToolContext | undefined;
   const spy: Tool = {
