@@ -8,6 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "start": "node --env-file-if-exists=.env src/main.ts",
     "test": "node --test",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test"

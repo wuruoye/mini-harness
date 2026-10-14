@@ -30,6 +30,15 @@ export interface UserMessage {
   content: string;
 }
 
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  /** 从提示缓存里读取的输入 token */
+  cacheReadTokens: number;
+  /** 写入提示缓存的输入 token */
+  cacheWriteTokens: number;
+}
+
 export interface AssistantMessage {
   role: "assistant";
   content: AssistantContent[];
@@ -37,6 +46,8 @@ export interface AssistantMessage {
   /** 生成这条消息的厂商和模型，换模型时据此决定 thinking 块能不能带回去 */
   provider: string;
   model: string;
+  /** 这次请求的 token 用量；真实厂商会填，假模型可以不填 */
+  usage?: Usage;
 }
 
 export interface ToolResultMessage {
