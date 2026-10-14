@@ -26,6 +26,7 @@ import { editTool } from "./tools/edit.ts";
 import { readFileTool } from "./tools/read-file.ts";
 import { writeFileTool } from "./tools/write-file.ts";
 import { loadProjectEnv } from "./env.ts";
+import { appendMessage, createSession, listSessions, loadSession, type Session } from "./agent/session.ts";
 
 loadProjectEnv();
 
@@ -111,16 +112,27 @@ const tools = [readFileTool, bashTool, editTool, writeFileTool];
 const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
 
-/** 权限模式：启动参数 --mode 优先，其次是环境变量 MH_PERMISSION_MODE，都没有时为 auto */
-function initialMode(): PermissionMode {
-  let fromArgs: string | undefined;
+/** 启动参数：--mode 权限模式，--continue 接着上次的会话，--resume <id> 打开指定会话 */
+function parseCli() {
   try {
-    fromArgs = parseArgs({ options: { mode: { type: "string" } } }).values.mode;
+    return parseArgs({
+      options: {
+        mode: { type: "string" },
+        continue: { type: "boolean", default: false },
+        resume: { type: "string" },
+      },
+    }).values;
   } catch (err) {
     fail(`启动参数有误：${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+const cli = parseCli();
+
+/** 权限模式：启动参数 --mode 优先，其次是环境变量 MH_PERMISSION_MODE，都没有时为 auto */
+function initialMode(): PermissionMode {
   // .env 里写了 MH_PERMISSION_MODE= 但没填值时，按没设置处理
-  const value = fromArgs ?? (process.env.MH_PERMISSION_MODE || "auto");
+  const value = cli.mode ?? (process.env.MH_PERMISSION_MODE || "auto");
   if (!isPermissionMode(value)) {
     fail(`权限模式只能是 ${Object.keys(PERMISSION_MODES).join("、")} 之一，现在是 ${value}`);
   }
@@ -197,7 +209,45 @@ function totalUsage(messages: Message[]): Usage {
   return total;
 }
 
-let history: Message[] = [];
+/** 会话文件放在 MH_SESSION_DIR，默认 ~/.mini-harness/sessions */
+const SESSION_BASE = process.env.MH_SESSION_DIR || join(homedir(), ".mini-harness", "sessions");
+
+/** 当前会话；新会话在发出第一条消息时才创建文件，避免留下空会话 */
+let session: Session | undefined;
+
+async function openInitialSession(): Promise<Session | undefined> {
+  if (cli.continue && cli.resume) fail("--continue 和 --resume 只能用一个");
+  if (cli.continue) {
+    const [latest] = await listSessions(SESSION_BASE, cwd);
+    if (!latest) {
+      console.log(styleText("dim", "这个目录还没有会话，将开始新会话"));
+      return undefined;
+    }
+    return loadSession(latest.file);
+  }
+  if (cli.resume) {
+    const found = (await listSessions(SESSION_BASE, cwd)).find((info) => info.id === cli.resume);
+    if (!found) fail(`在 ${cwd} 的会话里找不到 ${cli.resume}，运行后输入 /sessions 可以查看`);
+    return loadSession(found.file);
+  }
+  return undefined;
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+async function printSessions(): Promise<void> {
+  const list = await listSessions(SESSION_BASE, cwd);
+  if (list.length === 0) {
+    console.log(styleText("dim", "这个目录还没有会话"));
+    return;
+  }
+  for (const info of list) {
+    const mark = info.id === session?.id ? "*" : " ";
+    console.log(`${mark} ${info.id}  ${styleText("dim", `${formatTime(info.updatedAt)}  ${info.messageCount} 条`)}  ${info.preview}`);
+  }
+}
 
 const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
 // 第 6 个里程碑再做中断，现在按 Ctrl-C 直接退出
@@ -264,8 +314,14 @@ function prompt(): void {
   if (!closed) rl.prompt();
 }
 
-console.log(styleText("dim", `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出，/mode 切换权限模式。`));
+console.log(
+  styleText("dim", `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出，/mode 切换权限模式，/sessions 列出会话，/new 开新会话。`),
+);
 console.log(describeMode());
+session = await openInitialSession();
+if (session) {
+  console.log(styleText("dim", `已恢复会话 ${session.id}，共 ${session.messages.length} 条消息`));
+}
 
 while (true) {
   prompt();
@@ -289,20 +345,41 @@ while (true) {
     }
     continue;
   }
+  if (input === "/sessions") {
+    await printSessions();
+    continue;
+  }
+  if (input === "/new") {
+    session = undefined;
+    console.log(styleText("dim", "已开始新会话"));
+    continue;
+  }
   if (input === "") continue;
 
+  if (!session) {
+    session = await createSession(SESSION_BASE, cwd);
+    console.log(styleText("dim", `会话保存在 ${session.file}`));
+  }
+  const current = session;
+  const historyBefore = [...current.messages];
+  const userMessage: Message = { role: "user", content: input };
+  // 每条新消息产生时立刻写进会话文件；写文件是异步的，先收集起来，这一轮结束后统一等待
+  const writes: Promise<void>[] = [appendMessage(current, userMessage)];
+
   try {
-    const result = await runAgent([...history, { role: "user", content: input }], {
+    const result = await runAgent([...historyBefore, userMessage], {
       provider,
       system: SYSTEM_PROMPT,
       tools,
       cwd,
-      onEvent: printEvent,
+      onEvent: (event) => {
+        printEvent(event);
+        if (event.type === "message") writes.push(appendMessage(current, event.message));
+      },
       checkPermission,
       sandbox: mode === "auto" ? sandboxPolicy : undefined,
     });
-    const added = result.messages.slice(history.length);
-    history = result.messages;
+    const added = result.messages.slice(historyBefore.length);
 
     const usage = totalUsage(added);
     const turns = added.filter((m): m is AssistantMessage => m.role === "assistant").length;
@@ -310,8 +387,13 @@ while (true) {
     if (result.stopReason !== "stop") parts.push(`停止原因 ${result.stopReason}`);
     console.log(styleText("dim", `[${parts.join("，")}]`));
   } catch (err) {
-    // 这一轮的输入不进历史，下次重新输入即可
+    // 已经产生的消息都已写进会话，下次接着这些历史继续
     console.error(styleText("red", `出错了：${err instanceof Error ? err.message : String(err)}`));
+  }
+  try {
+    await Promise.all(writes);
+  } catch (err) {
+    console.error(styleText("red", `保存会话失败：${err instanceof Error ? err.message : String(err)}`));
   }
 }
 

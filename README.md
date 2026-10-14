@@ -36,6 +36,17 @@ node ~/Documents/github/mini-harness/src/main.ts
 
 输入 `/exit` 或按 Ctrl-D 退出。
 
+## 会话
+
+每个会话存成一个 JSONL 文件，放在 `~/.mini-harness/sessions/<项目目录编码>/<会话 id>.jsonl`（可以用 `MH_SESSION_DIR` 换位置）。第一行是会话信息，之后每条消息一行，消息一产生就写入。
+
+```bash
+pnpm start --continue          # 接着这个目录上次的会话
+pnpm start --resume <会话 id>   # 打开指定会话
+```
+
+运行中输入 `/sessions` 列出这个目录的会话，`/new` 开始新会话。
+
 ## 工具和权限
 
 agent 有四个工具：`read_file`、`bash`、`edit`、`write_file`。每次调用工具前按 `src/agent/permission.ts` 里的规则判断：读文件和 `git status`、`ls` 这类只读命令直接放行，`rm -rf` 直接拒绝，其他操作在命令行里询问。回答 `y` 允许，`a` 在本次会话里一直允许同一条命令或同一个文件，`n` 拒绝，也可以直接输入拒绝的理由，理由会交给模型。
@@ -81,6 +92,6 @@ pnpm replay tmp/anthropic-xxx.sse
 | `src/main.ts` | 命令行入口 |
 | `scripts/` | 观察和回放 API 原始响应的脚本 |
 | `src/ai/` | 模型接入层：统一消息类型、SSE 解析、Anthropic 和 OpenAI 适配器、测试用的假模型 |
-| `src/agent/` | 主循环和工具接口 |
+| `src/agent/` | 主循环、工具接口、权限规则、会话存储 |
 | `src/tools/` | 各个工具 |
 | `docs/plan.md` | 方案、分工、里程碑和参考代码 |
