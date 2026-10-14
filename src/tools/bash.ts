@@ -41,7 +41,7 @@ export const bashTool: Tool = {
    * - 退出码不为 0、超时、被信号结束时，isError 为 true
    * - context.sandbox 有值，并且 args.sandbox 不是 false 时，把 context.sandbox 传给 runCommand，
    *   在沙箱里执行；其他情况不用沙箱
-   * - 待实现：在沙箱里执行后，如果退出码不为 0、输出里有 "Operation not permitted"，并且 context.checkPermission 存在，
+   * - 在沙箱里执行后，如果退出码不为 0、输出里有 "Operation not permitted"，并且 context.checkPermission 存在，
    *   就认为是被沙箱拦下，用 context.checkPermission 申请在沙箱外重新执行：
    *   - 申请的工具调用是 { type: "toolCall", id: "sandbox-escalation", name: "bash", arguments: 原参数加上 sandbox: false }，
    *     reason 是 SANDBOX_ESCALATION_REASON。这样也会走权限规则，比如规则禁止的命令不会去问用户
@@ -60,12 +60,30 @@ export const bashTool: Tool = {
     }
 
     const timeoutMs = Math.min(requestedTimeout, BASH_MAX_TIMEOUT_MS);
-    const result = await runCommand(command, {
+    const runOptions = {
       cwd: context.cwd,
       timeoutMs,
       maxOutputChars: BASH_MAX_OUTPUT_CHARS,
-      sandbox: args.sandbox === false ? undefined : context.sandbox,
-    });
+    };
+    const sandbox = args.sandbox === false ? undefined : context.sandbox;
+    let result = await runCommand(command, { ...runOptions, sandbox });
+    let prefix = "";
+    let suffix = "";
+    if (sandbox && result.exitCode !== 0 && result.output.includes("Operation not permitted") && context.checkPermission) {
+      const decision = await context.checkPermission({
+        type: "toolCall",
+        id: "sandbox-escalation",
+        name: "bash",
+        arguments: { ...args, sandbox: false },
+      }, SANDBOX_ESCALATION_REASON);
+      if (decision.allowed) {
+        result = await runCommand(command, runOptions);
+        prefix = "[沙箱里被拦下，经用户同意在沙箱外重新执行]\n";
+      } else {
+        suffix = `\n[沙箱拦下了这个操作，用户没有同意在沙箱外执行${decision.reason ? `：${decision.reason}` : ""}]`;
+      }
+    }
+
     const status = result.timedOut
       ? `[超时，已在 ${timeoutMs} 毫秒后结束]`
       : result.signal !== null
@@ -73,7 +91,7 @@ export const bashTool: Tool = {
         : `[退出码 ${result.exitCode}]`;
     const separator = result.output !== "" && !result.output.endsWith("\n") ? "\n" : "";
     return {
-      content: result.output + separator + status,
+      content: prefix + result.output + separator + status + suffix,
       isError: result.exitCode !== 0 || result.timedOut || result.signal !== null,
     };
   },

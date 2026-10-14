@@ -9,8 +9,8 @@ export const DEFAULT_MAX_TURNS = 20;
  *
  * - 不修改传入的历史；工具错误作为结果交回模型。
  * - 找到工具后、执行前调用 checkPermission；拒绝时作为错误结果返回，循环继续。
- * - 待实现：checkPermission 和 sandbox 一样放进工具的 context，工具执行中可以再申请权限。
  *   找不到的工具直接报错，不用询问权限。
+ * - checkPermission 和 sandbox 一起放进工具的 context，工具执行中可以再申请权限。
  * - 最后一轮也执行完工具调用，避免历史留下没有结果的 toolCall，影响后续请求。
  */
 export async function runAgent(messages: Message[], options: AgentOptions): Promise<AgentResult> {
@@ -18,7 +18,7 @@ export async function runAgent(messages: Message[], options: AgentOptions): Prom
 
   const toolMap = new Map<string, Tool>(tools.map((t) => [t.definition.name, t]));
   const toolDefs = tools.map((t) => t.definition);
-  const context = { cwd, sandbox: options.sandbox };
+  const context = { cwd, sandbox: options.sandbox, checkPermission };
   const history: Message[] = [...messages];
   let turns = 0;
 
