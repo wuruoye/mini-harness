@@ -44,7 +44,10 @@ export interface OpenAIUsage {
   prompt_tokens_details?: { cached_tokens?: number };
 }
 
-/** 工具调用的一个片段。index 指第几个工具调用；id 和 name 只在第一片里出现 */
+/**
+ * 工具调用的一个片段。index 指第几个工具调用；id 和 name 只在第一片里出现。
+ * 有些兼容服务在后续片段里也带 id 和 name，但值是空字符串
+ */
 export interface OpenAIToolCallDelta {
   index: number;
   id?: string;
@@ -68,7 +71,11 @@ export interface OpenAIChunk {
       reasoning_content?: string | null;
       tool_calls?: OpenAIToolCallDelta[];
     };
-    finish_reason: OpenAIFinishReason | null;
+    /**
+     * 标准里没结束时是 null。公司网关等兼容服务会用空字符串 "" 表示没结束，
+     * 用 "error" 表示服务端出错
+     */
+    finish_reason: OpenAIFinishReason | "error" | "" | null;
   }[];
   /** 打开 include_usage 后，最后会多一个 choices 为空、只带 usage 的数据块；其他数据块里是 null */
   usage?: OpenAIUsage | null;

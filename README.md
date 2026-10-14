@@ -49,6 +49,8 @@ pnpm explore:anthropic --tool 读一下 package.json    # 带上 read_file 工�
 
 `pnpm explore:openai` 的用法相同。
 
+agent 运行时也可以保存原始响应：在 `.env` 里设置 `MH_SAVE_RAW=1`，每次请求的响应都会另存到 `tmp/`。
+
 把保存的文件交给适配器的解析函数，调试时不用反复请求 API。文件名以 `openai-` 开头的交给 OpenAI 适配器，其余交给 Anthropic 适配器：
 
 ```bash

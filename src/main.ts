@@ -1,5 +1,7 @@
 // 命令行入口：读取用户输入，交给主循环，把过程打印出来。
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
@@ -24,6 +26,29 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+const RAW_DIR = join(import.meta.dirname, "..", "tmp");
+
+/**
+ * 设置了 MH_SAVE_RAW=1 时，返回一个会把原始响应另存一份的 fetch：
+ * 每次请求的响应写到 mini-harness/tmp/<前缀>-<时间>.sse，可以用 pnpm replay 回放。
+ * 没设置时返回 undefined，适配器用默认的 fetch。
+ */
+function rawSavingFetch(prefix: string): typeof fetch | undefined {
+  if (process.env.MH_SAVE_RAW !== "1") return undefined;
+  return async (input, init) => {
+    const response = await fetch(input, init);
+    if (!response.body) return response;
+    // tee 把响应流分成两份：一份照常交给适配器解析，一份写进文件
+    const [forCaller, forFile] = response.body.tee();
+    const file = join(RAW_DIR, `${prefix}-${Date.now()}.sse`);
+    mkdir(RAW_DIR, { recursive: true })
+      .then(() => writeFile(file, forFile))
+      .then(() => console.error(styleText("dim", `[原始响应已保存到 ${file}]`)))
+      .catch((err: unknown) => console.error(styleText("red", `保存原始响应失败：${String(err)}`)));
+    return new Response(forCaller, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+}
+
 /** 根据 LLM_PROVIDER 选择厂商，返回 provider 和用于显示的模型名 */
 function createProvider(): { provider: Provider; model: string } {
   const name = process.env.LLM_PROVIDER || "anthropic";
@@ -41,6 +66,7 @@ function createProvider(): { provider: Provider; model: string } {
       model,
       baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
       effort: effort as AnthropicEffort | undefined,
+      fetch: rawSavingFetch("anthropic"),
     });
     return { provider, model: `anthropic ${model}` };
   }
@@ -55,6 +81,7 @@ function createProvider(): { provider: Provider; model: string } {
       model,
       baseUrl: process.env.OPENAI_BASE_URL || undefined,
       reasoningEffort: process.env.OPENAI_REASONING_EFFORT || undefined,
+      fetch: rawSavingFetch("openai"),
     });
     return { provider, model: `openai ${model}` };
   }
