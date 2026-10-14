@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "lib": ["esnext"],
+    "module": "nodenext",
+    "types": ["node"],
+
+    // Node 直接运行 .ts，tsc 只做类型检查
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    // 只允许 Node 能直接去掉的类型写法：不能用 enum、namespace、构造函数参数属性
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
