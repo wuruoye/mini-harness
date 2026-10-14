@@ -34,17 +34,18 @@ node --env-file=$HOME/Documents/github/mini-harness/.env $HOME/Documents/github/
 
 ## 观察 API 原始响应
 
-不经过适配器，直接请求 Anthropic API，打印原始的流式事件并保存到 `tmp/`：
+输入问题后直接请求 Anthropic API，打印原始的流式事件并保存到 `tmp/`，不经过适配器和主循环。每个问题都是独立的一次请求：
 
 ```bash
-pnpm explore        # 普通问答
-pnpm explore tool   # 让模型调用工具
+pnpm explore                           # 交互模式，逐条输入问题
+pnpm explore 用一句话介绍你自己          # 只问这一句
+pnpm explore --tool 读一下 package.json  # 带上 read_file 工具定义
 ```
 
 把保存的文件交给 `readAnthropicStream` 解析，调试时不用反复请求 API：
 
 ```bash
-pnpm replay tmp/anthropic-tool-xxx.sse
+pnpm replay tmp/anthropic-xxx.sse
 ```
 
 用 VS Code 打开项目后，在「运行和调试」里可以直接选这几个脚本，以及运行 agent、调试当前测试文件，断点可以打在 .ts 文件里。
