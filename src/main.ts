@@ -26,7 +26,8 @@ import { editTool } from "./tools/edit.ts";
 import { readFileTool } from "./tools/read-file.ts";
 import { writeFileTool } from "./tools/write-file.ts";
 import { loadProjectEnv } from "./env.ts";
-import { appendMessage, createSession, listSessions, loadSession, type Session } from "./agent/session.ts";
+import { appendCompaction, appendMessage, createSession, listSessions, loadSession, type Session } from "./agent/session.ts";
+import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 
 loadProjectEnv();
 
@@ -209,6 +210,19 @@ function totalUsage(messages: Message[]): Usage {
   return total;
 }
 
+/** 读取正整数配置，没设置时用默认值 */
+function positiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) fail(`${name} 必须是正整数，现在是 ${raw}`);
+  return value;
+}
+
+/** 上下文估算超过 COMPACT_AT 个 token 时，发新问题前先压缩；压缩时保留最近大约 COMPACT_KEEP 个 token */
+const COMPACT_AT = positiveInt("MH_COMPACT_AT", 100_000);
+const COMPACT_KEEP = positiveInt("MH_COMPACT_KEEP", 20_000);
+
 /** 会话文件放在 MH_SESSION_DIR，默认 ~/.mini-harness/sessions */
 const SESSION_BASE = process.env.MH_SESSION_DIR || join(homedir(), ".mini-harness", "sessions");
 
@@ -235,6 +249,22 @@ async function openInitialSession(): Promise<Session | undefined> {
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+/** 压缩一次上下文并写进会话，返回是否真的压缩了 */
+async function compactSession(target: Session): Promise<boolean> {
+  const previous = target.compaction;
+  console.log(styleText("dim", "正在压缩上下文……"));
+  const result = await compact(provider, target.messages, previous, COMPACT_KEEP);
+  if (!result) {
+    console.log(styleText("dim", "没有可以压缩的内容"));
+    return false;
+  }
+  await appendCompaction(target, result);
+  const after = contextTokens(buildContext(target.messages, result));
+  const replaced = result.firstKeptIndex - (previous?.firstKeptIndex ?? 0);
+  console.log(styleText("dim", `[已压缩上下文：约 ${result.tokensBefore} → ${after} token，${replaced} 条消息换成了摘要]`));
+  return true;
 }
 
 async function printSessions(): Promise<void> {
@@ -316,7 +346,10 @@ function prompt(): void {
 }
 
 console.log(
-  styleText("dim", `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出，/mode 切换权限模式，/sessions 列出会话，/new 开新会话。`),
+  styleText(
+    "dim",
+    `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出，/mode 切换权限模式，/sessions 列出会话，/new 开新会话，/compact 压缩上下文。`,
+  ),
 );
 console.log(describeMode());
 session = await openInitialSession();
@@ -350,6 +383,17 @@ while (true) {
     await printSessions();
     continue;
   }
+  if (input === "/compact") {
+    if (!session) console.log(styleText("dim", "还没有对话，不需要压缩"));
+    else {
+      try {
+        await compactSession(session);
+      } catch (err) {
+        console.error(styleText("red", `压缩失败：${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+    continue;
+  }
   if (input === "/new") {
     session = undefined;
     console.log(styleText("dim", "已开始新会话"));
@@ -362,13 +406,24 @@ while (true) {
     console.log(styleText("dim", `会话保存在 ${session.file}`));
   }
   const current = session;
-  const historyBefore = [...current.messages];
+
+  // 上下文太大时，发新问题前先压缩；压缩失败不影响这次提问
+  if (contextTokens(buildContext(current.messages, current.compaction)) > COMPACT_AT) {
+    try {
+      await compactSession(current);
+    } catch (err) {
+      console.error(styleText("red", `压缩失败，这次先不压缩：${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
+
+  // 发给模型的是压缩后的上下文；会话里仍然保存全部消息
+  const context = buildContext(current.messages, current.compaction);
   const userMessage: Message = { role: "user", content: input };
   // 每条新消息产生时立刻写进会话文件；写文件是异步的，先收集起来，这一轮结束后统一等待
   const writes: Promise<void>[] = [appendMessage(current, userMessage)];
 
   try {
-    const result = await runAgent([...historyBefore, userMessage], {
+    const result = await runAgent([...context, userMessage], {
       provider,
       system: SYSTEM_PROMPT,
       tools,
@@ -380,11 +435,17 @@ while (true) {
       checkPermission,
       sandbox: mode === "auto" ? sandboxPolicy : undefined,
     });
-    const added = result.messages.slice(historyBefore.length);
+    const added = result.messages.slice(context.length);
 
     const usage = totalUsage(added);
     const turns = added.filter((m): m is AssistantMessage => m.role === "assistant").length;
-    const parts = [`请求 ${turns} 次`, `输入 ${usage.inputTokens}`, `缓存读 ${usage.cacheReadTokens}`, `输出 ${usage.outputTokens} token`];
+    const parts = [
+      `请求 ${turns} 次`,
+      `输入 ${usage.inputTokens}`,
+      `缓存读 ${usage.cacheReadTokens}`,
+      `输出 ${usage.outputTokens} token`,
+      `上下文约 ${contextTokens(result.messages)} token`,
+    ];
     if (result.stopReason !== "stop") parts.push(`停止原因 ${result.stopReason}`);
     console.log(styleText("dim", `[${parts.join("，")}]`));
   } catch (err) {

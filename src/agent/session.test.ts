@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fakeReply, text, thinking, toolCall } from "../ai/fake.ts";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "../ai/types.ts";
-import { appendMessage, createSession, listSessions, loadSession, SESSION_VERSION, sessionDir } from "./session.ts";
+import { appendCompaction, appendMessage, createSession, listSessions, loadSession, SESSION_VERSION, sessionDir } from "./session.ts";
+import type { Compaction } from "./compaction.ts";
 
 let base = "";
 const cwd = "/Users/a/my proj";
@@ -68,7 +69,9 @@ describe("appendMessage 和 loadSession", () => {
     // 内容里的换行被 JSON 转义，不会拆成多行
     assert.equal((await lines(session.file)).length, 4);
     const loaded = await loadSession(session.file);
-    assert.deepEqual(loaded, session);
+    assert.deepEqual([loaded.id, loaded.file, loaded.cwd, loaded.createdAt], [session.id, session.file, session.cwd, session.createdAt]);
+    assert.deepEqual(loaded.messages, session.messages);
+    assert.equal(loaded.compaction, undefined);
   });
 
   test("不等上一次写完就接着追加，也按调用顺序写入", async () => {
@@ -191,3 +194,45 @@ describe("listSessions", () => {
   });
 });
 
+describe("压缩记录", () => {
+  const first: Compaction = { summary: "摘要一", firstKeptIndex: 1, messageCount: 2, tokensBefore: 1000 };
+  const second: Compaction = { summary: "摘要二", firstKeptIndex: 3, messageCount: 4, tokensBefore: 2000 };
+
+  test("追加后立刻可见，读回来是最后一条，消息不受影响", async () => {
+    const session = await createSession(base, "/compaction/load");
+    await appendMessage(session, user("一"));
+    await appendMessage(session, user("二"));
+    const pending = appendCompaction(session, first);
+    assert.deepEqual(session.compaction, first);
+    await pending;
+    await appendMessage(session, user("三"));
+    await appendMessage(session, user("四"));
+    await appendCompaction(session, second);
+
+    const loaded = await loadSession(session.file);
+    assert.deepEqual(loaded.compaction, second);
+    assert.deepEqual(loaded.messages, [user("一"), user("二"), user("三"), user("四")]);
+  });
+
+  test("和 appendMessage 共用写入顺序", async () => {
+    const session = await createSession(base, "/compaction/order");
+    await Promise.all([
+      appendMessage(session, user("x".repeat(100_000))),
+      appendCompaction(session, first),
+      appendMessage(session, user("短")),
+    ]);
+    const types = (await lines(session.file)).map((line) => JSON.parse(line).type);
+    assert.deepEqual(types, ["session", "message", "compaction", "message"]);
+  });
+
+  test("listSessions 的消息数不算压缩记录，更新时间算", async () => {
+    const project = "/compaction/list";
+    const session = await createSession(base, project, new Date("2026-10-01T00:00:00Z"));
+    await appendMessage(session, user("一"), new Date("2026-10-01T00:01:00Z"));
+    await appendCompaction(session, first, new Date("2026-10-01T00:02:00Z"));
+
+    const [info] = await listSessions(base, project);
+    assert.equal(info!.messageCount, 1);
+    assert.equal(info!.updatedAt, "2026-10-01T00:02:00.000Z");
+  });
+});

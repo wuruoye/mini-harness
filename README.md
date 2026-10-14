@@ -47,6 +47,12 @@ pnpm start --resume <会话 id>   # 打开指定会话
 
 运行中输入 `/sessions` 列出这个目录的会话，`/new` 开始新会话。
 
+## 上下文压缩
+
+发新问题前估算上下文的大小，超过 `MH_COMPACT_AT`（默认 10 万 token）时，把较早的消息让模型总结成摘要，之后的请求只带「摘要 + 最近大约 `MH_COMPACT_KEEP`（默认 2 万）token 的消息」。也可以输入 `/compact` 手动压缩。
+
+估算方式：最后一次请求返回的用量就是当时上下文的真实大小，再加上之后新增消息的估算值（中日韩字符每个算 1 个 token，其他字符每 4 个算 1 个）。压缩记录追加在会话文件里，完整的消息仍然都保存着。
+
 ## 工具和权限
 
 agent 有四个工具：`read_file`、`bash`、`edit`、`write_file`。每次调用工具前按 `src/agent/permission.ts` 里的规则判断：读文件和 `git status`、`ls` 这类只读命令直接放行，`rm -rf` 直接拒绝，其他操作在命令行里询问。回答 `y` 允许，`a` 在本次会话里一直允许同一条命令或同一个文件，`n` 拒绝，也可以直接输入拒绝的理由，理由会交给模型。
@@ -92,6 +98,6 @@ pnpm replay tmp/anthropic-xxx.sse
 | `src/main.ts` | 命令行入口 |
 | `scripts/` | 观察和回放 API 原始响应的脚本 |
 | `src/ai/` | 模型接入层：统一消息类型、SSE 解析、Anthropic 和 OpenAI 适配器、测试用的假模型 |
-| `src/agent/` | 主循环、工具接口、权限规则、会话存储 |
+| `src/agent/` | 主循环、工具接口、权限规则、会话存储、上下文压缩 |
 | `src/tools/` | 各个工具 |
 | `docs/plan.md` | 方案、分工、里程碑和参考代码 |

@@ -5,13 +5,16 @@ import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, truncate, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Message } from "../ai/types.ts";
+import type { Compaction } from "./compaction.ts";
 
 export const SESSION_VERSION = 1;
 
 /** 会话文件里的一行 */
 export type SessionEntry =
   | { type: "session"; version: number; id: string; cwd: string; createdAt: string }
-  | { type: "message"; message: Message; timestamp: string };
+  | { type: "message"; message: Message; timestamp: string }
+  /** 一次上下文压缩；同一个会话里可以有多条，最后一条有效 */
+  | ({ type: "compaction"; timestamp: string } & Compaction);
 
 export interface Session {
   id: string;
@@ -19,16 +22,19 @@ export interface Session {
   file: string;
   cwd: string;
   createdAt: string;
-  /** 按顺序排列的全部消息 */
+  /** 按顺序排列的全部消息，压缩不会删掉它们 */
   messages: Message[];
+  /** 最近一次上下文压缩；没压缩过时为 undefined */
+  compaction?: Compaction;
 }
 
 export interface SessionInfo {
   id: string;
   file: string;
   createdAt: string;
-  /** 最后一条记录的时间 */
+  /** 最后一条记录的时间，压缩记录也算 */
   updatedAt: string;
+  /** 消息的条数，不包括压缩记录 */
   messageCount: number;
   /** 第一条用户消息的第一行，最多 50 个字符，超出部分用「…」代替；没有用户消息时为空字符串 */
   preview: string;
@@ -178,4 +184,15 @@ export async function listSessions(baseDir: string, cwd: string): Promise<Sessio
       };
     }));
   return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * 待实现：追加一条压缩记录。先把 session.compaction 设成 compaction，
+ * 再往文件末尾写一行 { type: "compaction", ...compaction, timestamp: now.toISOString() }。
+ * 和 appendMessage 共用同一个写入顺序：不等上一次写完就接着调用，也按调用顺序写入。
+ * 相应地，loadSession 要把最后一条压缩记录（只取 Compaction 的四个字段）放进 session.compaction，
+ * listSessions 的 messageCount 不算压缩记录，updatedAt 要算
+ */
+export async function appendCompaction(session: Session, compaction: Compaction, now = new Date()): Promise<void> {
+  throw new Error("未实现");
 }
