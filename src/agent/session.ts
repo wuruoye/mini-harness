@@ -1,5 +1,5 @@
 // 会话存储：每个会话一个 JSONL 文件，每行一条记录，只追加、不改写。
-// 文件放在 <baseDir>/<项目目录编码>/<会话 id>.jsonl，第一行是会话信息，后面每行一条消息。
+// 文件放在 <baseDir>/<项目目录编码>/<会话 id>.jsonl，第一行是会话信息，后面是消息或压缩记录。
 
 import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, truncate, writeFile } from "node:fs/promises";
@@ -85,22 +85,30 @@ export async function createSession(baseDir: string, cwd: string, now = new Date
 export async function appendMessage(session: Session, message: Message, now = new Date()): Promise<void> {
   session.messages.push(message);
   const entry: SessionEntry = { type: "message", message, timestamp: now.toISOString() };
+  await appendEntry(session, entry);
+}
+
+function appendEntry(session: Session, entry: SessionEntry): Promise<void> {
   const line = JSON.stringify(entry) + "\n";
   const pending = (pendingWrites.get(session) ?? Promise.resolve())
     .catch(() => {})
     .then(() => appendFile(session.file, line, "utf8"));
   pendingWrites.set(session, pending);
-  await pending;
+  return pending;
 }
 
 /** 列表只读取记录；恢复会话时才修复文件尾部。 */
 async function readSessionRecords(file: string, repair = false): Promise<{
   header: Extract<SessionEntry, { type: "session" }>;
   messages: Extract<SessionEntry, { type: "message" }>[];
+  compaction?: Compaction;
+  updatedAt: string;
 }> {
   const contents = await readFile(file);
   let header: Extract<SessionEntry, { type: "session" }> | undefined;
   const messages: Extract<SessionEntry, { type: "message" }>[] = [];
+  let compaction: Compaction | undefined;
+  let updatedAt: string | undefined;
   let offset = 0;
   let lineNumber = 0;
 
@@ -127,8 +135,15 @@ async function readSessionRecords(file: string, repair = false): Promise<{
         if (entry?.type !== "session") throw new Error(`会话 ${file} 的第一条记录必须是 session`);
         header = entry;
       } else {
-        if (entry?.type !== "message") throw new Error(`会话 ${file} 第 ${lineNumber} 行必须是 message 记录`);
-        messages.push(entry);
+        if (entry?.type === "message") {
+          messages.push(entry);
+        } else if (entry?.type === "compaction") {
+          const { summary, firstKeptIndex, messageCount, tokensBefore } = entry;
+          compaction = { summary, firstKeptIndex, messageCount, tokensBefore };
+        } else {
+          throw new Error(`会话 ${file} 第 ${lineNumber} 行必须是 message 或 compaction 记录`);
+        }
+        updatedAt = entry.timestamp;
       }
       if (newline === -1 && repair) await appendFile(file, "\n", "utf8");
     }
@@ -136,7 +151,7 @@ async function readSessionRecords(file: string, repair = false): Promise<{
   }
 
   if (header === undefined) throw new Error(`会话 ${file} 缺少 session 记录`);
-  return { header, messages };
+  return { header, messages, compaction, updatedAt: updatedAt ?? header.createdAt };
 }
 
 /**
@@ -149,13 +164,14 @@ async function readSessionRecords(file: string, repair = false): Promise<{
  */
 export async function loadSession(file: string): Promise<Session> {
   const fullPath = resolve(file);
-  const { header, messages } = await readSessionRecords(fullPath, true);
+  const { header, messages, compaction } = await readSessionRecords(fullPath, true);
   return {
     id: header.id,
     file: fullPath,
     cwd: header.cwd,
     createdAt: header.createdAt,
     messages: messages.map((entry) => entry.message),
+    compaction,
   };
 }
 
@@ -171,14 +187,14 @@ export async function listSessions(baseDir: string, cwd: string): Promise<Sessio
     .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
     .map(async (entry): Promise<SessionInfo> => {
       const file = join(dir, entry.name);
-      const { header, messages } = await readSessionRecords(file);
+      const { header, messages, updatedAt } = await readSessionRecords(file);
       const firstUser = messages.find((entry) => entry.message.role === "user")?.message;
       const firstLine = firstUser?.role === "user" ? firstUser.content.split(/\r\n?|\n/, 1)[0] ?? "" : "";
       return {
         id: header.id,
         file,
         createdAt: header.createdAt,
-        updatedAt: messages.at(-1)?.timestamp ?? header.createdAt,
+        updatedAt,
         messageCount: messages.length,
         preview: firstLine.length > 50 ? firstLine.slice(0, 50) + "…" : firstLine,
       };
@@ -187,12 +203,14 @@ export async function listSessions(baseDir: string, cwd: string): Promise<Sessio
 }
 
 /**
- * 待实现：追加一条压缩记录。先把 session.compaction 设成 compaction，
+ * 追加一条压缩记录。先把 session.compaction 设成 compaction，
  * 再往文件末尾写一行 { type: "compaction", ...compaction, timestamp: now.toISOString() }。
  * 和 appendMessage 共用同一个写入顺序：不等上一次写完就接着调用，也按调用顺序写入。
  * 相应地，loadSession 要把最后一条压缩记录（只取 Compaction 的四个字段）放进 session.compaction，
  * listSessions 的 messageCount 不算压缩记录，updatedAt 要算
  */
 export async function appendCompaction(session: Session, compaction: Compaction, now = new Date()): Promise<void> {
-  throw new Error("未实现");
+  session.compaction = compaction;
+  const entry: SessionEntry = { type: "compaction", ...compaction, timestamp: now.toISOString() };
+  await appendEntry(session, entry);
 }

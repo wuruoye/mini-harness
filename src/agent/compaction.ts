@@ -65,7 +65,14 @@ export function serializeForSummary(messages: Message[]): string {
  * 其余字符每 4 个算 1 个，向上取整。比如 "你好abcde" 是 2 + 2 = 4
  */
 export function estimateTokens(text: string): number {
-  throw new Error("未实现");
+  const cjk = /[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/u;
+  let cjkCount = 0;
+  let otherCount = 0;
+  for (const character of text) {
+    if (cjk.test(character)) cjkCount++;
+    else otherCount++;
+  }
+  return cjkCount + Math.ceil(otherCount / 4);
 }
 
 /**
@@ -75,7 +82,23 @@ export function estimateTokens(text: string): number {
  * - toolResult：content
  */
 export function estimateMessageTokens(message: Message): number {
-  throw new Error("未实现");
+  if (message.role !== "assistant") return estimateTokens(message.content);
+
+  let content = "";
+  for (const block of message.content) {
+    switch (block.type) {
+      case "text":
+        content += block.text;
+        break;
+      case "thinking":
+        content += block.thinking;
+        break;
+      case "toolCall":
+        content += block.name + JSON.stringify(block.arguments);
+        break;
+    }
+  }
+  return estimateTokens(content);
 }
 
 /**
@@ -86,7 +109,17 @@ export function estimateMessageTokens(message: Message): number {
  * usage 的四项加起来是 0 时当作没有 usage：有的服务不返回用量，适配器会把它们都记成 0。
  */
 export function contextTokens(messages: Message[]): number {
-  throw new Error("未实现");
+  let estimated = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role === "assistant" && message.usage) {
+      const usage = message.usage;
+      const total = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens;
+      if (total !== 0) return total + estimated;
+    }
+    estimated += estimateMessageTokens(message);
+  }
+  return estimated;
 }
 
 /**
@@ -97,7 +130,19 @@ export function contextTokens(messages: Message[]): number {
  * - 选出来的是 0，或者根本没有 user 消息时，返回 undefined，表示前面没有可以压缩的内容
  */
 export function findCutIndex(messages: Message[], keepTokens: number): number | undefined {
-  throw new Error("未实现");
+  let total = 0;
+  let cutIndex: number | undefined;
+  let lastUserIndex: number | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    total += estimateMessageTokens(message);
+    if (message.role === "user") {
+      lastUserIndex ??= i;
+      if (total <= keepTokens) cutIndex = i;
+    }
+  }
+  const index = cutIndex ?? lastUserIndex;
+  return index === 0 ? undefined : index;
 }
 
 /**
@@ -108,7 +153,17 @@ export function findCutIndex(messages: Message[], keepTokens: number): number | 
  * - 返回回复里所有 text 块拼起来、去掉首尾空白的结果；结果为空时抛异常
  */
 export async function summarize(provider: Provider, messages: Message[], previousSummary?: string): Promise<string> {
-  throw new Error("未实现");
+  const parts: string[] = [];
+  if (previousSummary !== undefined) parts.push(`之前的摘要：\n${previousSummary}`);
+  parts.push(`需要总结的对话记录：\n${serializeForSummary(messages)}`, SUMMARY_INSTRUCTIONS);
+  const reply = await provider.complete({
+    system: SUMMARY_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: parts.join("\n\n") }],
+    tools: [],
+  });
+  const summary = reply.content.filter((block) => block.type === "text").map((block) => block.text).join("").trim();
+  if (summary === "") throw new Error("模型返回的摘要为空");
+  return summary;
 }
 
 /**
@@ -122,7 +177,19 @@ export async function summarize(provider: Provider, messages: Message[], previou
  * - 不能修改传入的消息对象
  */
 export function buildContext(messages: Message[], compaction: Compaction | undefined): Message[] {
-  throw new Error("未实现");
+  if (compaction === undefined) return [...messages];
+
+  const context: Message[] = [{ role: "user", content: `${SUMMARY_PREFIX}\n\n${compaction.summary}` }];
+  for (let i = compaction.firstKeptIndex; i < messages.length; i++) {
+    const message = messages[i]!;
+    if (message.role === "assistant" && i < compaction.messageCount) {
+      const { usage: _usage, ...withoutUsage } = message;
+      context.push({ ...withoutUsage, content: message.content.filter((block) => block.type !== "thinking") });
+    } else {
+      context.push(message);
+    }
+  }
+  return context;
 }
 
 /**
@@ -139,5 +206,15 @@ export async function compact(
   current: Compaction | undefined,
   keepTokens: number,
 ): Promise<Compaction | undefined> {
-  throw new Error("未实现");
+  const messageCount = messages.length;
+  const context = buildContext(messages, current);
+  const tokensBefore = contextTokens(context);
+  const cutIndex = findCutIndex(context, keepTokens);
+  const summaryCount = current === undefined ? 0 : 1;
+  if (cutIndex === undefined || cutIndex <= summaryCount) return undefined;
+
+  // 已压缩的上下文开头多一条摘要，其后的下标从旧 firstKeptIndex 开始对应完整历史。
+  const firstKeptIndex = (current?.firstKeptIndex ?? 0) + cutIndex - summaryCount;
+  const summary = await summarize(provider, context.slice(summaryCount, cutIndex), current?.summary);
+  return { summary, firstKeptIndex, messageCount, tokensBefore };
 }
