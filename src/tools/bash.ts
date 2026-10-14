@@ -13,14 +13,14 @@ export const bashTool: Tool = {
       `每次调用都是一个新的 shell，cd 和环境变量不会保留到下一次调用。` +
       `默认 ${BASH_DEFAULT_TIMEOUT_MS / 1000} 秒超时，可以用 timeout_ms 调整，最多 ${BASH_MAX_TIMEOUT_MS / 1000} 秒。` +
       `输出超过 ${BASH_MAX_OUTPUT_CHARS} 个字符时只保留开头和结尾。不要执行需要交互输入的命令。` +
-      `在 sandbox 权限模式下，命令默认在沙箱里执行，只能写项目目录和临时目录，写别处会报 Operation not permitted；` +
+      `在 auto 权限模式下，命令默认在沙箱里执行，只能写项目目录和临时目录，写别处会报 Operation not permitted；` +
       `确实需要写项目外的文件时（比如安装依赖要写全局缓存），把 sandbox 设为 false，这需要用户确认。`,
     parameters: {
       type: "object",
       properties: {
         command: { type: "string", description: "要执行的命令" },
         timeout_ms: { type: "number", description: "超时毫秒数，可选" },
-        sandbox: { type: "boolean", description: "是否在沙箱里执行，只在 sandbox 权限模式下有效，默认 true" },
+        sandbox: { type: "boolean", description: "是否在沙箱里执行，只在 auto 权限模式下有效，默认 true" },
       },
       required: ["command"],
       additionalProperties: false,

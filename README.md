@@ -40,17 +40,14 @@ node ~/Documents/github/mini-harness/src/main.ts
 
 agent 有四个工具：`read_file`、`bash`、`edit`、`write_file`。每次调用工具前按 `src/agent/permission.ts` 里的规则判断：读文件和 `git status`、`ls` 这类只读命令直接放行，`rm -rf` 直接拒绝，其他操作在命令行里询问。回答 `y` 允许，`a` 在本次会话里一直允许同一条命令或同一个文件，`n` 拒绝，也可以直接输入拒绝的理由，理由会交给模型。
 
-权限模式在规则判断之后再做调整，启动时用 `pnpm start --mode auto` 或 `.env` 里的 `MH_PERMISSION_MODE` 指定，运行中输入 `/mode` 查看、`/mode auto` 切换：
+权限模式在规则判断之后再做调整，启动时用 `pnpm start --mode bypass` 或 `.env` 里的 `MH_PERMISSION_MODE` 指定，运行中输入 `/mode` 查看、`/mode bypass` 切换：
 
 | 模式 | 效果 |
 |---|---|
-| `default` | 按规则放行、询问或拒绝 |
-| `acceptEdits` | 工作目录里的文件修改不再询问，其他照常 |
-| `auto` | 需要确认的操作自动放行，规则禁止的仍然拒绝 |
+| `auto`（默认） | 项目里的文件操作不再询问；`bash` 在 macOS 沙箱里执行、不再询问，只能写项目目录和临时目录；项目外的文件和申请在沙箱外执行的命令按规则来 |
 | `bypass` | 所有操作都不经确认直接执行，包括规则禁止的，建议只在容器或临时目录里用 |
-| `sandbox` | 项目里的文件操作不再询问；`bash` 默认在 macOS 沙箱里执行、不再询问，只能写项目目录和临时目录；项目外的文件和申请在沙箱外执行的命令按规则来 |
 
-sandbox 模式下可以用 `MH_SANDBOX_WRITABLE` 额外放开可写目录（比如 `~/.npm`），用 `MH_SANDBOX_NETWORK=off` 禁止联网。沙箱只限制写文件和联网，不限制读文件。
+auto 模式下可以用 `MH_SANDBOX_WRITABLE` 额外放开可写目录（比如 `~/.npm`），用 `MH_SANDBOX_NETWORK=off` 禁止联网。沙箱只限制写文件和联网，不限制读文件；临时目录本身是可写的，放在里面的文件不受保护。
 
 ## 观察 API 原始响应
 

@@ -111,7 +111,7 @@ const tools = [readFileTool, bashTool, editTool, writeFileTool];
 const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
 
-/** 权限模式：启动参数 --mode 优先，其次是环境变量 MH_PERMISSION_MODE，都没有时为 default */
+/** 权限模式：启动参数 --mode 优先，其次是环境变量 MH_PERMISSION_MODE，都没有时为 auto */
 function initialMode(): PermissionMode {
   let fromArgs: string | undefined;
   try {
@@ -120,16 +120,16 @@ function initialMode(): PermissionMode {
     fail(`启动参数有误：${err instanceof Error ? err.message : String(err)}`);
   }
   // .env 里写了 MH_PERMISSION_MODE= 但没填值时，按没设置处理
-  const value = fromArgs ?? (process.env.MH_PERMISSION_MODE || "default");
+  const value = fromArgs ?? (process.env.MH_PERMISSION_MODE || "auto");
   if (!isPermissionMode(value)) {
     fail(`权限模式只能是 ${Object.keys(PERMISSION_MODES).join("、")} 之一，现在是 ${value}`);
   }
-  if (value === "sandbox" && process.platform !== "darwin") fail("sandbox 模式目前只支持 macOS");
+  if (value === "auto" && process.platform !== "darwin") fail("auto 模式依赖 macOS 的沙箱，在其他系统上请用 --mode bypass");
   return value;
 }
 
 /**
- * sandbox 模式下 bash 的沙箱配置：可写的是工作目录、临时目录，以及 MH_SANDBOX_WRITABLE 里列出的目录（冒号分隔，可以用 ~）；
+ * auto 模式下 bash 的沙箱配置：可写的是工作目录、临时目录，以及 MH_SANDBOX_WRITABLE 里列出的目录（冒号分隔，可以用 ~）；
  * MH_SANDBOX_NETWORK=off 时禁止联网
  */
 const sandboxPolicy: SandboxPolicy = {
@@ -151,7 +151,7 @@ let mode = initialMode();
 function describeMode(): string {
   const text = `权限模式 ${mode}：${PERMISSION_MODES[mode]}`;
   if (mode === "bypass") return styleText("red", `${text}。建议只在容器或临时目录里这样用`);
-  if (mode === "sandbox") {
+  if (mode === "auto") {
     const network = sandboxPolicy.allowNetwork ? "可以联网" : "禁止联网";
     return styleText("dim", `${text}。沙箱里可写：${sandboxPolicy.writableDirs.join("、")}；${network}`);
   }
@@ -260,7 +260,7 @@ async function checkPermission(call: ToolCallBlock): Promise<PermissionDecision>
 
 function prompt(): void {
   // 不是默认模式时，在提示符前面标出来
-  rl.setPrompt(mode === "default" ? "> " : `[${mode}] > `);
+  rl.setPrompt(mode === "auto" ? "> " : `[${mode}] > `);
   if (!closed) rl.prompt();
 }
 
@@ -279,8 +279,8 @@ while (true) {
       for (const [name, text] of Object.entries(PERMISSION_MODES)) {
         console.log(`${name === mode ? "*" : " "} ${name.padEnd(12)} ${styleText("dim", text)}`);
       }
-    } else if (next === "sandbox" && process.platform !== "darwin") {
-      console.log(styleText("red", "sandbox 模式目前只支持 macOS"));
+    } else if (next === "auto" && process.platform !== "darwin") {
+      console.log(styleText("red", "auto 模式依赖 macOS 的沙箱"));
     } else if (isPermissionMode(next)) {
       mode = next;
       console.log(describeMode());
@@ -299,7 +299,7 @@ while (true) {
       cwd,
       onEvent: printEvent,
       checkPermission,
-      sandbox: mode === "sandbox" ? sandboxPolicy : undefined,
+      sandbox: mode === "auto" ? sandboxPolicy : undefined,
     });
     const added = result.messages.slice(history.length);
     history = result.messages;

@@ -11,7 +11,7 @@ export interface SandboxPolicy {
 export interface ToolContext {
   /** 工作目录，相对路径以它为准 */
   cwd: string;
-  /** 设置了就表示当前在 sandbox 模式，bash 默认在沙箱里执行 */
+  /** 设置了就表示当前在 auto 模式，bash 默认在沙箱里执行 */
   sandbox?: SandboxPolicy;
 }
 

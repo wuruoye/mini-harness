@@ -156,23 +156,9 @@ describe("applyMode", () => {
 
   test("isPermissionMode", () => {
     assert.equal(isPermissionMode("auto"), true);
-    assert.equal(isPermissionMode("acceptEdits"), true);
-    assert.equal(isPermissionMode("sandbox"), true);
-    assert.equal(isPermissionMode("yolo"), false);
+    assert.equal(isPermissionMode("bypass"), true);
+    assert.equal(isPermissionMode("sandbox"), false);
     assert.equal(isPermissionMode("toString"), false);
-  });
-
-  test("default：原样返回", () => {
-    for (const action of ACTIONS) {
-      assert.equal(applyMode("default", action, "bash", { command: "ls" }, cwd), action);
-      assert.equal(applyMode("default", action, "edit", { path: "a.ts" }, cwd), action);
-    }
-  });
-
-  test("auto：ask 变成 allow，deny 仍然是 deny", () => {
-    assert.equal(applyMode("auto", "ask", "bash", { command: "npm install" }, cwd), "allow");
-    assert.equal(applyMode("auto", "allow", "bash", { command: "ls" }, cwd), "allow");
-    assert.equal(applyMode("auto", "deny", "bash", { command: "rm -rf /" }, cwd), "deny");
   });
 
   test("bypass：一律 allow", () => {
@@ -181,36 +167,23 @@ describe("applyMode", () => {
     }
   });
 
-  test("acceptEdits：工作目录里的 edit、write_file 不再询问", () => {
-    assert.equal(applyMode("acceptEdits", "ask", "edit", { path: "src/a.ts" }, cwd), "allow");
-    assert.equal(applyMode("acceptEdits", "ask", "write_file", { path: "/work/project/new.ts" }, cwd), "allow");
-  });
-
-  test("acceptEdits：工作目录外的文件、规则禁止的修改、其他工具都不变", () => {
-    assert.equal(applyMode("acceptEdits", "ask", "edit", { path: "../other.ts" }, cwd), "ask");
-    assert.equal(applyMode("acceptEdits", "ask", "write_file", { path: "/etc/hosts" }, cwd), "ask");
-    assert.equal(applyMode("acceptEdits", "deny", "edit", { path: "src/a.ts" }, cwd), "deny");
-    assert.equal(applyMode("acceptEdits", "ask", "bash", { command: "echo hi > a.txt" }, cwd), "ask");
-    assert.equal(applyMode("acceptEdits", "ask", "edit", {}, cwd), "ask");
-  });
-
-  test("sandbox：项目里的文件操作不再询问，项目外的按规则", () => {
+  test("auto：项目里的文件操作不再询问，项目外的按规则", () => {
     for (const tool of ["read_file", "edit", "write_file"]) {
-      assert.equal(applyMode("sandbox", "ask", tool, { path: "src/a.ts" }, cwd), "allow", tool);
-      assert.equal(applyMode("sandbox", "ask", tool, { path: "/etc/hosts" }, cwd), "ask", tool);
+      assert.equal(applyMode("auto", "ask", tool, { path: "src/a.ts" }, cwd), "allow", tool);
+      assert.equal(applyMode("auto", "ask", tool, { path: "/etc/hosts" }, cwd), "ask", tool);
     }
-    assert.equal(applyMode("sandbox", "allow", "read_file", { path: "/etc/hosts" }, cwd), "allow");
-    assert.equal(applyMode("sandbox", "deny", "edit", { path: "src/a.ts" }, cwd), "deny");
+    assert.equal(applyMode("auto", "allow", "read_file", { path: "/etc/hosts" }, cwd), "allow");
+    assert.equal(applyMode("auto", "deny", "edit", { path: "src/a.ts" }, cwd), "deny");
   });
 
-  test("sandbox：沙箱里的 bash 命令不再询问，申请在沙箱外执行的按规则", () => {
-    assert.equal(applyMode("sandbox", "ask", "bash", { command: "npm test; echo done" }, cwd), "allow");
-    assert.equal(applyMode("sandbox", "ask", "bash", { command: "npm test", sandbox: true }, cwd), "allow");
-    assert.equal(applyMode("sandbox", "ask", "bash", { command: "npm install", sandbox: false }, cwd), "ask");
-    assert.equal(applyMode("sandbox", "deny", "bash", { command: "rm -rf /" }, cwd), "deny");
+  test("auto：沙箱里的 bash 命令不再询问，申请在沙箱外执行的按规则", () => {
+    assert.equal(applyMode("auto", "ask", "bash", { command: "npm test; echo done" }, cwd), "allow");
+    assert.equal(applyMode("auto", "ask", "bash", { command: "npm test", sandbox: true }, cwd), "allow");
+    assert.equal(applyMode("auto", "ask", "bash", { command: "npm install", sandbox: false }, cwd), "ask");
+    assert.equal(applyMode("auto", "deny", "bash", { command: "rm -rf /" }, cwd), "deny");
   });
 
-  test("sandbox：其他工具不变", () => {
-    assert.equal(applyMode("sandbox", "ask", "web_fetch", { url: "https://example.com" }, cwd), "ask");
+  test("auto：其他工具不变", () => {
+    assert.equal(applyMode("auto", "ask", "web_fetch", { url: "https://example.com" }, cwd), "ask");
   });
 });
