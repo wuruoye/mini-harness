@@ -1,6 +1,6 @@
 import type { OpenAIChunk, OpenAIRequestBody, OpenAIToolCall } from "./openai-types.ts";
 import { parseSse, type SseEvent } from "./sse.ts";
-import type { AssistantContent, AssistantMessage, ModelRequest, Provider, StopReason } from "./types.ts";
+import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest, Provider, StopReason } from "./types.ts";
 
 export const PROVIDER_NAME = "openai";
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -205,10 +205,10 @@ export class OpenAIProvider implements Provider {
    * POST {baseUrl}/chat/completions，请求头带 authorization: Bearer {apiKey} 和 content-type: application/json，
    * 请求体是 toOpenAIRequest 的结果。
    * HTTP 状态码不是 2xx 时抛异常，信息里带上状态码和响应正文；
-   * 待实现：options.signal 原样传给 fetch，用户中断时请求会立刻结束。
+   * options.signal 原样传给 fetch，用户中断时请求会立刻结束。
    * 否则用 parseSse 和 readOpenAIStream 把响应解析成 assistant 消息。
    */
-  async complete(request: ModelRequest): Promise<AssistantMessage> {
+  async complete(request: ModelRequest, options: CompleteOptions = {}): Promise<AssistantMessage> {
     const { apiKey, baseUrl = DEFAULT_BASE_URL, fetch: fetchImpl = globalThis.fetch } = this.#options;
     const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
@@ -217,6 +217,7 @@ export class OpenAIProvider implements Provider {
         "content-type": "application/json",
       },
       body: JSON.stringify(toOpenAIRequest(request, this.#options)),
+      signal: options.signal,
     });
 
     if (!response.ok) {

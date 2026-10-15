@@ -356,6 +356,29 @@ describe("中断", () => {
     assert.equal(toolSignal, controller.signal);
   });
 
+  test("等待权限确认时被中止：即使允许也不再执行工具", async () => {
+    const controller = new AbortController();
+    const executed: string[] = [];
+    const provider = new FakeProvider([fakeReply([toolCall("1", "echo")])]);
+    const result = await runAgent([user("x")], options(provider, {
+      tools: [recordingTool("echo", executed)],
+      signal: controller.signal,
+      checkPermission: async () => {
+        controller.abort();
+        return { allowed: true };
+      },
+    }));
+
+    assert.deepEqual(executed, []);
+    assert.equal(provider.requests.length, 1);
+    assert.equal(result.stopReason, "aborted");
+    const message = result.messages.at(-1);
+    assert.ok(message?.role === "toolResult");
+    assert.equal(message.toolCallId, "1");
+    assert.equal(message.isError, true);
+    assert.match(message.content, /中断/);
+  });
+
   test("工具执行中被中止：剩下的工具调用不执行，补上中断的结果，不再请求模型", async () => {
     const controller = new AbortController();
     const executed: string[] = [];

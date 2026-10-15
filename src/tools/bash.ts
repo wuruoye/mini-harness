@@ -49,7 +49,7 @@ export const bashTool: Tool = {
    *   - 不允许时返回沙箱里那次的结果，content 最后另起一行写「[沙箱拦下了这个操作，用户没有同意在沙箱外执行]」，
    *     有理由的话在后面加上「：理由」
    *   其他情况（执行成功、不是这个错误、没有 checkPermission）原样返回
-   * - 待实现：把 context.signal 传给 runCommand；结果的 aborted 为 true 时，isError 为 true，
+   * - 把 context.signal 传给 runCommand；结果的 aborted 为 true 时，isError 为 true，
    *   结果那一行写「[已被用户中断]」，不再申请在沙箱外重新执行
    */
   async execute(args, context) {
@@ -66,12 +66,13 @@ export const bashTool: Tool = {
       cwd: context.cwd,
       timeoutMs,
       maxOutputChars: BASH_MAX_OUTPUT_CHARS,
+      signal: context.signal,
     };
     const sandbox = args.sandbox === false ? undefined : context.sandbox;
     let result = await runCommand(command, { ...runOptions, sandbox });
     let prefix = "";
     let suffix = "";
-    if (sandbox && result.exitCode !== 0 && result.output.includes("Operation not permitted") && context.checkPermission) {
+    if (sandbox && !result.aborted && !context.signal?.aborted && result.exitCode !== 0 && result.output.includes("Operation not permitted") && context.checkPermission) {
       const decision = await context.checkPermission({
         type: "toolCall",
         id: "sandbox-escalation",
@@ -86,15 +87,17 @@ export const bashTool: Tool = {
       }
     }
 
-    const status = result.timedOut
-      ? `[超时，已在 ${timeoutMs} 毫秒后结束]`
-      : result.signal !== null
-        ? `[被信号 ${result.signal} 结束]`
-        : `[退出码 ${result.exitCode}]`;
+    const status = result.aborted
+      ? "[已被用户中断]"
+      : result.timedOut
+        ? `[超时，已在 ${timeoutMs} 毫秒后结束]`
+        : result.signal !== null
+          ? `[被信号 ${result.signal} 结束]`
+          : `[退出码 ${result.exitCode}]`;
     const separator = result.output !== "" && !result.output.endsWith("\n") ? "\n" : "";
     return {
       content: prefix + result.output + separator + status + suffix,
-      isError: result.exitCode !== 0 || result.timedOut || result.signal !== null,
+      isError: result.aborted || result.exitCode !== 0 || result.timedOut || result.signal !== null,
     };
   },
 };

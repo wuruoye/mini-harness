@@ -123,6 +123,24 @@ describe("沙箱", { skip: process.platform !== "darwin" && "沙箱只支持 mac
     return { calls, checkPermission };
   }
 
+  test("命令被中断后，即使输出里有沙箱错误也不申请重跑", async () => {
+    const controller = new AbortController();
+    const { calls, checkPermission } = recorder({ allowed: true });
+    const timer = setTimeout(() => controller.abort(), 100);
+    try {
+      const result = await bashTool.execute({ command: `echo hi > ${outside}/interrupted.txt; sleep 5` }, {
+        cwd: project, sandbox, checkPermission, signal: controller.signal,
+      });
+      assert.equal(result.isError, true);
+      assert.match(result.content, /Operation not permitted/);
+      assert.match(result.content, /\[已被用户中断\]$/);
+      assert.equal(calls.length, 0);
+      await assert.rejects(readFile(join(outside, "interrupted.txt")));
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   test("被沙箱拦下时申请在沙箱外重新执行，同意后重新执行", async () => {
     const { calls, checkPermission } = recorder({ allowed: true });
     const command = `echo hi > ${outside}/escalate.txt && echo 写好了`;

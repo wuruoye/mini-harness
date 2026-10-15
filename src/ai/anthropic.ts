@@ -7,7 +7,7 @@ import type {
   AnthropicUsage,
 } from "./anthropic-types.ts";
 import { parseSse, type SseEvent } from "./sse.ts";
-import type { AssistantContent, AssistantMessage, ModelRequest, Provider, StopReason } from "./types.ts";
+import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest, Provider, StopReason } from "./types.ts";
 
 export const PROVIDER_NAME = "anthropic";
 export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
@@ -248,10 +248,10 @@ export class AnthropicProvider implements Provider {
    * POST {baseUrl}/messages，请求头带 x-api-key、anthropic-version 和 content-type: application/json，
    * 请求体是 toAnthropicRequest 的结果。
    * HTTP 状态码不是 2xx 时抛异常，信息里带上状态码和响应正文；
-   * 待实现：options.signal 原样传给 fetch，用户中断时请求会立刻结束。
+   * options.signal 原样传给 fetch，用户中断时请求会立刻结束。
    * 否则用 parseSse 和 readAnthropicStream 把响应解析成 assistant 消息。
    */
-  async complete(request: ModelRequest): Promise<AssistantMessage> {
+  async complete(request: ModelRequest, options: CompleteOptions = {}): Promise<AssistantMessage> {
     const { apiKey, baseUrl = DEFAULT_BASE_URL, fetch: fetchImpl = globalThis.fetch } = this.#options;
     const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/messages`, {
       method: "POST",
@@ -261,6 +261,7 @@ export class AnthropicProvider implements Provider {
         "content-type": "application/json",
       },
       body: JSON.stringify(toAnthropicRequest(request, this.#options)),
+      signal: options.signal,
     });
 
     if (!response.ok) {
