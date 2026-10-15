@@ -248,6 +248,7 @@ export class AnthropicProvider implements Provider {
    * POST {baseUrl}/messages，请求头带 x-api-key、anthropic-version 和 content-type: application/json，
    * 请求体是 toAnthropicRequest 的结果。
    * HTTP 状态码不是 2xx 时抛异常，信息里带上状态码和响应正文；
+   * 待实现：options.signal 原样传给 fetch，用户中断时请求会立刻结束。
    * 否则用 parseSse 和 readAnthropicStream 把响应解析成 assistant 消息。
    */
   async complete(request: ModelRequest): Promise<AssistantMessage> {

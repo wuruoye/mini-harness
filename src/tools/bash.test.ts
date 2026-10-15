@@ -66,6 +66,16 @@ test("timeout_ms 不是正数时抛异常，信息里提到 timeout_ms", async (
   await assert.rejects(run({ command: "true", timeout_ms: "1000" }), /timeout_ms/);
 });
 
+test("中断时尽快结束命令，注明被用户中断", async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  setTimeout(() => controller.abort(), 100);
+  const result = await bashTool.execute({ command: "sleep 5" }, { cwd: dir, signal: controller.signal });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /\[已被用户中断\]/);
+  assert.ok(Date.now() - started < 3000);
+});
+
 test("定义里有 sandbox 参数", () => {
   const properties = bashTool.definition.parameters.properties as Record<string, unknown>;
   assert.ok("sandbox" in properties);

@@ -1,6 +1,6 @@
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { FakeProvider, fakeReply, text, thinking, toolCall } from "../ai/fake.ts";
+import { FakeProvider, fakeReply, hangUntilAborted, text, thinking, toolCall } from "../ai/fake.ts";
 import type { Message, ToolCallBlock, ToolResultMessage, UserMessage } from "../ai/types.ts";
 import { runAgent } from "./loop.ts";
 import type { AgentEvent, AgentOptions, PermissionDecision, Tool, ToolContext } from "./types.ts";
@@ -309,4 +309,148 @@ test("checkPermission 也放进工具的 context，工具执行中可以再申�
   const provider = new FakeProvider([fakeReply([toolCall("1", "spy")]), fakeReply([text("ok")])]);
   await runAgent([user("x")], options(provider, { tools: [spy], checkPermission }));
   assert.equal(seen?.checkPermission, checkPermission);
+});
+
+describe("中断", () => {
+  test("开始前已经中止：不请求模型，历史不变", async () => {
+    const provider = new FakeProvider([]);
+    const input = [user("hi")];
+    const result = await runAgent(input, options(provider, { signal: AbortSignal.abort() }));
+    assert.equal(provider.requests.length, 0);
+    assert.deepEqual(result, { messages: input, stopReason: "aborted" });
+  });
+
+  test("请求模型时被中止：不抛异常，丢掉这次请求", async () => {
+    const controller = new AbortController();
+    const provider = new FakeProvider([hangUntilAborted()]);
+    setTimeout(() => controller.abort(), 20);
+    const result = await runAgent([user("hi")], options(provider, { signal: controller.signal }));
+    assert.deepEqual(result, { messages: [user("hi")], stopReason: "aborted" });
+  });
+
+  test("不是中止导致的错误照常抛出", async () => {
+    const provider = new FakeProvider([]);
+    await assert.rejects(runAgent([user("hi")], options(provider, { signal: new AbortController().signal })), /FakeProvider/);
+  });
+
+  test("signal 传给模型请求和工具", async () => {
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    let toolSignal: AbortSignal | undefined;
+    const spy: Tool = {
+      definition: { name: "spy", description: "", parameters: { type: "object", properties: {} } },
+      async execute(_args, context) {
+        toolSignal = context.signal;
+        return { content: "" };
+      },
+    };
+    const provider = new FakeProvider([
+      (_request, signal) => {
+        providerSignal = signal;
+        return fakeReply([toolCall("1", "spy")]);
+      },
+      fakeReply([text("ok")]),
+    ]);
+    await runAgent([user("x")], options(provider, { tools: [spy], signal: controller.signal }));
+    assert.equal(providerSignal, controller.signal);
+    assert.equal(toolSignal, controller.signal);
+  });
+
+  test("工具执行中被中止：剩下的工具调用不执行，补上中断的结果，不再请求模型", async () => {
+    const controller = new AbortController();
+    const executed: string[] = [];
+    const stopper: Tool = {
+      definition: { name: "stopper", description: "", parameters: { type: "object", properties: {} } },
+      async execute() {
+        executed.push("stopper");
+        controller.abort();
+        return { content: "我执行完了" };
+      },
+    };
+    const first = fakeReply([toolCall("1", "stopper"), toolCall("2", "echo", { text: "a" }), toolCall("3", "echo", { text: "b" })]);
+    const provider = new FakeProvider([first]);
+    const events: AgentEvent[] = [];
+    const result = await runAgent([user("x")], options(provider, {
+      tools: [stopper, recordingTool("echo", executed)],
+      signal: controller.signal,
+      onEvent: (event) => events.push(event),
+    }));
+
+    assert.deepEqual(executed, ["stopper"]);
+    assert.equal(provider.requests.length, 1);
+    assert.equal(result.stopReason, "aborted");
+    const results = result.messages.slice(2);
+    assert.deepEqual(results.map((m) => m.role === "toolResult" && m.toolCallId), ["1", "2", "3"]);
+    assert.deepEqual(results[0], toolResult("1", "stopper", "我执行完了"));
+    for (const skipped of results.slice(1)) {
+      assert.ok(skipped.role === "toolResult");
+      assert.equal(skipped.isError, true);
+      assert.match(skipped.content, /中断/);
+    }
+    // 跳过的调用只发 message 事件
+    assert.deepEqual(events.map((e) => e.type), ["message", "toolStart", "toolEnd", "message", "message", "message"]);
+  });
+});
+
+describe("排队的消息", () => {
+  /** 按顺序返回预先准备的几批消息，用完后返回空数组 */
+  function queue(...batches: UserMessage[][]) {
+    let calls = 0;
+    return {
+      get calls() {
+        return calls;
+      },
+      getQueuedMessages: () => {
+        calls++;
+        return batches.shift() ?? [];
+      },
+    };
+  }
+
+  test("一轮工具结果之后插进对话，下一次请求就能看到", async () => {
+    const first = fakeReply([toolCall("1", "echo", { text: "a" })]);
+    const provider = new FakeProvider([first, fakeReply([text("好的")])]);
+    const q = queue([user("顺便看下 b")]);
+    const events: AgentEvent[] = [];
+    const result = await runAgent([user("看下 a")], options(provider, {
+      getQueuedMessages: q.getQueuedMessages,
+      onEvent: (event) => events.push(event),
+    }));
+
+    const expected = [user("看下 a"), first, toolResult("1", "echo", "a"), user("顺便看下 b")];
+    assert.deepEqual(provider.requests[1]!.messages, expected);
+    assert.equal(result.stopReason, "stop");
+    assert.ok(events.some((e) => e.type === "message" && e.message.role === "user"));
+  });
+
+  test("模型本来要结束时有排队的消息，就接着请求", async () => {
+    const provider = new FakeProvider([fakeReply([text("答一")]), fakeReply([text("答二")])]);
+    const q = queue([user("再问一句")]);
+    const result = await runAgent([user("问一")], options(provider, { getQueuedMessages: q.getQueuedMessages }));
+
+    assert.equal(provider.requests.length, 2);
+    assert.deepEqual(provider.requests[1]!.messages, [user("问一"), fakeReply([text("答一")]), user("再问一句")]);
+    assert.deepEqual(result.messages.at(-1), fakeReply([text("答二")]));
+  });
+
+  test("请求次数用完或被中断时不再取", async () => {
+    const q1 = queue([user("不会被取走")]);
+    const provider1 = new FakeProvider([fakeReply([toolCall("1", "echo", { text: "a" })])]);
+    const r1 = await runAgent([user("x")], options(provider1, { maxTurns: 1, getQueuedMessages: q1.getQueuedMessages }));
+    assert.equal(r1.stopReason, "maxTurns");
+    assert.equal(q1.calls, 0);
+
+    const controller = new AbortController();
+    const q2 = queue([user("不会被取走")]);
+    const stopper: Tool = {
+      definition: { name: "stopper", description: "", parameters: { type: "object", properties: {} } },
+      async execute() {
+        controller.abort();
+        return { content: "" };
+      },
+    };
+    const provider2 = new FakeProvider([fakeReply([toolCall("1", "stopper")])]);
+    await runAgent([user("x")], options(provider2, { tools: [stopper], signal: controller.signal, getQueuedMessages: q2.getQueuedMessages }));
+    assert.equal(q2.calls, 0);
+  });
 });

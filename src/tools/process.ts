@@ -12,6 +12,8 @@ export interface RunOptions {
   maxOutputChars: number;
   /** 设置了就在沙箱里执行，目前只支持 macOS */
   sandbox?: SandboxPolicy;
+  /** 中止信号：触发后像超时一样结束整组进程，结果里 aborted 为 true */
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -20,6 +22,8 @@ export interface RunResult {
   /** 结束进程的信号，比如超时后的 "SIGTERM"；正常退出时为 null */
   signal: string | null;
   timedOut: boolean;
+  /** 是否因为中止信号被结束；信号在开始前就已触发时，命令根本不会执行 */
+  aborted: boolean;
   /** stdout 和 stderr 按到达顺序合在一起，超长时中间部分已省略 */
   output: string;
   /** 实际产生的输出总字符数，大于 output 的长度说明有省略 */
@@ -66,6 +70,9 @@ export function runCommand(command: string, options: RunOptions): Promise<RunRes
   if (options.sandbox && process.platform !== "darwin") {
     return Promise.reject(new Error(`沙箱目前只支持 macOS，当前系统是 ${process.platform}`));
   }
+  if (options.signal?.aborted) {
+    return Promise.resolve({ exitCode: null, signal: null, timedOut: false, aborted: true, output: "", totalChars: 0 });
+  }
   const [file, args] = options.sandbox
     ? ["/usr/bin/sandbox-exec", [...sandboxExecArgs(options.sandbox), "bash", "-c", command]]
     : ["bash", ["-c", command]];
@@ -105,23 +112,37 @@ export function runCommand(command: string, options: RunOptions): Promise<RunRes
         }
       }
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
+    // 超时和中止都走这里：先礼貌地请进程退出，过一会儿还不退就强制结束
+    const stop = () => {
+      if (killTimer) return;
       killGroup("SIGTERM");
       killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, options.timeoutMs);
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      stop();
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    child.on("error", (err) => {
+    const cleanup = () => {
       clearTimeout(timer);
       clearTimeout(killTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+    child.on("error", (err) => {
+      cleanup();
       reject(err);
     });
     child.on("close", (exitCode, signal) => {
-      clearTimeout(timer);
-      clearTimeout(killTimer);
+      cleanup();
       const omitted = totalChars - head.length - tail.length;
       const output = omitted > 0 ? `${head}\n…（中间省略 ${omitted} 个字符）…\n${tail}` : head + tail;
-      resolve({ exitCode, signal, timedOut, output, totalChars });
+      resolve({ exitCode, signal, timedOut, aborted, output, totalChars });
     });
   });
 }

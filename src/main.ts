@@ -8,7 +8,7 @@ import { parseArgs, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
-import type { AssistantMessage, Message, Provider, ToolCallBlock, Usage } from "./ai/types.ts";
+import type { AssistantMessage, Message, Provider, ToolCallBlock, Usage, UserMessage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
 import {
   applyMode,
@@ -280,8 +280,24 @@ async function printSessions(): Promise<void> {
 }
 
 const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
-// 第 6 个里程碑再做中断，现在按 Ctrl-C 直接退出
-rl.on("SIGINT", () => process.exit(130));
+
+/** 当前这一轮的中止控制器；没有在运行时为 undefined */
+let running: AbortController | undefined;
+
+/** Ctrl-C：运行中先中断这一轮，再按一次才退出；空闲时直接退出 */
+function onInterrupt(): void {
+  if (running && !running.signal.aborted) {
+    running.abort();
+    console.log(styleText("yellow", "\n正在中断这一轮……再按一次 Ctrl-C 退出程序"));
+    // 正在等权限询问的回答的话，让它马上返回
+    for (const resolve of waiting.splice(0)) resolve(undefined);
+    return;
+  }
+  process.exit(130);
+}
+// 在终端里 Ctrl-C 由 readline 收到；输入来自管道时，是进程收到 SIGINT 信号
+rl.on("SIGINT", onInterrupt);
+process.on("SIGINT", onInterrupt);
 
 // 所有输入行进同一个队列，主循环读问题、权限询问读回答，都按顺序从这里取。
 // 这样运行中提前输入的内容，或者管道一次送进来的多行，都不会被读错位置
@@ -289,10 +305,21 @@ const pendingLines: string[] = [];
 const waiting: ((line: string | undefined) => void)[] = [];
 // 按 Ctrl-D（或管道输入读完）后 readline 关闭，之后读不到新的行
 let closed = false;
+
+// 在终端里，模型干活时输入的内容先排队，由主循环在这一步完成后插进对话；
+// 输入来自管道时不这样做，仍然按顺序逐行读，方便用脚本测试
+const steerable = process.stdin.isTTY === true;
+const steering: UserMessage[] = [];
+
 rl.on("line", (line) => {
   const resolve = waiting.shift();
   if (resolve) resolve(line);
-  else pendingLines.push(line);
+  else if (running && steerable) {
+    if (line.trim() !== "") {
+      steering.push({ role: "user", content: line });
+      console.log(styleText("dim", "  （收到，会在这一步完成后交给模型）"));
+    }
+  } else pendingLines.push(line);
 });
 rl.on("close", () => {
   closed = true;
@@ -327,7 +354,9 @@ async function checkPermission(call: ToolCallBlock, reason?: string): Promise<Pe
   const answer = await ask(
     styleText("yellow", `  需要确认：[y] 允许  [a] ${always}  [n] 拒绝，或者直接输入拒绝的理由\n  `) + "> ",
   );
-  if (answer === undefined) return { allowed: false, reason: "没有办法向用户确认" };
+  if (answer === undefined) {
+    return { allowed: false, reason: running?.signal.aborted ? "用户中断了这一轮" : "没有办法向用户确认" };
+  }
 
   const reply = answer.trim();
   if (reply === "y") return { allowed: true };
@@ -422,6 +451,7 @@ while (true) {
   // 每条新消息产生时立刻写进会话文件；写文件是异步的，先收集起来，这一轮结束后统一等待
   const writes: Promise<void>[] = [appendMessage(current, userMessage)];
 
+  running = new AbortController();
   try {
     const result = await runAgent([...context, userMessage], {
       provider,
@@ -434,6 +464,8 @@ while (true) {
       },
       checkPermission,
       sandbox: mode === "auto" ? sandboxPolicy : undefined,
+      signal: running.signal,
+      getQueuedMessages: () => steering.splice(0),
     });
     const added = result.messages.slice(context.length);
 
@@ -446,12 +478,16 @@ while (true) {
       `输出 ${usage.outputTokens} token`,
       `上下文约 ${contextTokens(result.messages)} token`,
     ];
-    if (result.stopReason !== "stop") parts.push(`停止原因 ${result.stopReason}`);
+    if (result.stopReason !== "stop" && result.stopReason !== "aborted") parts.push(`停止原因 ${result.stopReason}`);
+    if (result.stopReason === "aborted") console.log(styleText("yellow", "[已中断]"));
     console.log(styleText("dim", `[${parts.join("，")}]`));
   } catch (err) {
     // 已经产生的消息都已写进会话，下次接着这些历史继续
     console.error(styleText("red", `出错了：${err instanceof Error ? err.message : String(err)}`));
   }
+  running = undefined;
+  // 主循环最后一次取队列之后才输入的内容，当作下一个问题
+  pendingLines.push(...steering.splice(0).map((message) => message.content));
   try {
     await Promise.all(writes);
   } catch (err) {

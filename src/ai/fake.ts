@@ -3,6 +3,7 @@
 import type {
   AssistantContent,
   AssistantMessage,
+  CompleteOptions,
   ModelRequest,
   Provider,
   StopReason,
@@ -11,8 +12,10 @@ import type {
   ToolCallBlock,
 } from "./types.ts";
 
-/** 一条脚本回复：固定的消息，或者根据请求现场生成 */
-export type FakeReply = AssistantMessage | ((request: ModelRequest) => AssistantMessage);
+/** 一条脚本回复：固定的消息，或者根据请求现场生成（可以是异步的，能拿到中止信号） */
+export type FakeReply =
+  | AssistantMessage
+  | ((request: ModelRequest, signal?: AbortSignal) => AssistantMessage | Promise<AssistantMessage>);
 
 export class FakeProvider implements Provider {
   /**
@@ -26,7 +29,10 @@ export class FakeProvider implements Provider {
     this.#replies = [...replies];
   }
 
-  async complete(request: ModelRequest): Promise<AssistantMessage> {
+  async complete(request: ModelRequest, options?: CompleteOptions): Promise<AssistantMessage> {
+    const signal = options?.signal;
+    // 和真实的 fetch 一样：已经中止的信号，请求不会发出去
+    signal?.throwIfAborted();
     this.requests.push(structuredClone(request));
     const reply = this.#replies.shift();
     if (reply === undefined) {
@@ -34,8 +40,18 @@ export class FakeProvider implements Provider {
       throw new Error(`FakeProvider：脚本只有 ${count - 1} 条回复，却收到了第 ${count} 个请求`);
     }
     // 返回拷贝，调用方修改返回的消息不会影响测试里用来比对的原对象
-    return structuredClone(typeof reply === "function" ? reply(request) : reply);
+    return structuredClone(typeof reply === "function" ? await reply(request, signal) : reply);
   }
+}
+
+/** 模拟一个迟迟不返回的请求：一直等到被中止，然后以中止的原因结束 */
+export function hangUntilAborted(): FakeReply {
+  return (_request, signal) =>
+    new Promise((_resolve, reject) => {
+      if (!signal) return reject(new Error("hangUntilAborted：调用 complete 时没有传 signal"));
+      signal.throwIfAborted();
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
 }
 
 export function text(text: string): TextBlock {

@@ -58,6 +58,32 @@ test("stdin 是关闭的，等待输入的命令不会卡住", async () => {
   assert.equal(result.output, "done\n");
 });
 
+test("中止信号触发后结束整组进程，aborted 为 true", async () => {
+  const controller = new AbortController();
+  const marker = join(dir, "abort-marker");
+  const started = Date.now();
+  setTimeout(() => controller.abort(), 200);
+  const result = await runCommand(`(sleep 1; touch ${marker}) & sleep 10`, { ...options, signal: controller.signal });
+  assert.equal(result.aborted, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.exitCode, null);
+  assert.ok(Date.now() - started < 3000);
+  await new Promise((r) => setTimeout(r, 1500));
+  await assert.rejects(realpath(marker));
+});
+
+test("信号已经中止时不执行命令", async () => {
+  const marker = join(dir, "never-created");
+  const result = await runCommand(`touch ${marker}`, { ...options, signal: AbortSignal.abort() });
+  assert.equal(result.aborted, true);
+  await assert.rejects(realpath(marker));
+});
+
+test("正常结束时 aborted 为 false", async () => {
+  const result = await runCommand("true", { ...options, signal: new AbortController().signal });
+  assert.equal(result.aborted, false);
+});
+
 describe("沙箱", { skip: process.platform !== "darwin" && "沙箱只支持 macOS" }, () => {
   let project = "";
   let outside = "";

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fakeReply, text, thinking, toolCall } from "./fake.ts";
 import { OpenAIProvider, readOpenAIStream, toOpenAIRequest, type OpenAIOptions } from "./openai.ts";
 import type { SseEvent } from "./sse.ts";
-import type { Message, ModelRequest, ToolDefinition, ToolResultMessage } from "./types.ts";
+import type { Message, ModelRequest, Provider, ToolDefinition, ToolResultMessage } from "./types.ts";
 
 const MODEL = "gpt-test";
 const OPTIONS: OpenAIOptions = { apiKey: "test-key", model: MODEL };
@@ -292,6 +292,15 @@ describe("OpenAIProvider", () => {
     assert.equal(headers.get("authorization"), "Bearer test-key");
     assert.equal(headers.get("content-type"), "application/json");
     assert.deepEqual(JSON.parse(String(init.body)), toOpenAIRequest(req, OPTIONS));
+  });
+
+  test("中止信号原样传给 fetch", async () => {
+    const fetch = fakeFetch(() => okStream());
+    // 按 Provider 接口调用，complete 的第二个参数是接口规定的
+    const provider: Provider = new OpenAIProvider({ ...OPTIONS, fetch: fetch.fn });
+    const controller = new AbortController();
+    await provider.complete(request([{ role: "user", content: "hi" }]), { signal: controller.signal });
+    assert.equal(fetch.calls[0]!.init.signal, controller.signal);
   });
 
   test("baseUrl 可以修改", async () => {

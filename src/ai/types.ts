@@ -74,8 +74,13 @@ export interface ModelRequest {
   tools: ToolDefinition[];
 }
 
+export interface CompleteOptions {
+  /** 中止信号：被中止时尽快结束请求，这次调用以异常结束 */
+  signal?: AbortSignal;
+}
+
 /** 模型接入层的统一接口，每家厂商一个实现 */
 export interface Provider {
-  /** 请求一次模型，返回完整的 assistant 消息。网络或 API 出错时抛异常 */
-  complete(request: ModelRequest): Promise<AssistantMessage>;
+  /** 请求一次模型，返回完整的 assistant 消息。网络或 API 出错、被中止时抛异常 */
+  complete(request: ModelRequest, options?: CompleteOptions): Promise<AssistantMessage>;
 }

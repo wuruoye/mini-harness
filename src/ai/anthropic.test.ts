@@ -10,7 +10,7 @@ import {
 } from "./anthropic.ts";
 import { fakeReply, text, thinking, toolCall } from "./fake.ts";
 import type { SseEvent } from "./sse.ts";
-import type { AssistantMessage, Message, ModelRequest, ToolDefinition, ToolResultMessage } from "./types.ts";
+import type { AssistantMessage, Message, ModelRequest, Provider, ToolDefinition, ToolResultMessage } from "./types.ts";
 
 const MODEL = "claude-opus-5-5";
 const OPTIONS: AnthropicOptions = { apiKey: "test-key", model: MODEL };
@@ -348,6 +348,15 @@ describe("AnthropicProvider", () => {
     assert.equal(headers.get("anthropic-version"), ANTHROPIC_VERSION);
     assert.equal(headers.get("content-type"), "application/json");
     assert.deepEqual(JSON.parse(String(init.body)), toAnthropicRequest(req, OPTIONS));
+  });
+
+  test("中止信号原样传给 fetch", async () => {
+    const fetch = fakeFetch(() => sseResponse(textStream("end_turn")));
+    // 按 Provider 接口调用，complete 的第二个参数是接口规定的
+    const provider: Provider = new AnthropicProvider({ ...OPTIONS, fetch: fetch.fn });
+    const controller = new AbortController();
+    await provider.complete(request([{ role: "user", content: "hi" }]), { signal: controller.signal });
+    assert.equal(fetch.calls[0]!.init.signal, controller.signal);
   });
 
   test("baseUrl 可以修改", async () => {

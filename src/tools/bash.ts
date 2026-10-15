@@ -49,6 +49,8 @@ export const bashTool: Tool = {
    *   - 不允许时返回沙箱里那次的结果，content 最后另起一行写「[沙箱拦下了这个操作，用户没有同意在沙箱外执行]」，
    *     有理由的话在后面加上「：理由」
    *   其他情况（执行成功、不是这个错误、没有 checkPermission）原样返回
+   * - 待实现：把 context.signal 传给 runCommand；结果的 aborted 为 true 时，isError 为 true，
+   *   结果那一行写「[已被用户中断]」，不再申请在沙箱外重新执行
    */
   async execute(args, context) {
     const { command, timeout_ms: requestedTimeout = BASH_DEFAULT_TIMEOUT_MS } = args;

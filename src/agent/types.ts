@@ -1,4 +1,4 @@
-import type { Message, Provider, StopReason, ToolCallBlock, ToolDefinition } from "../ai/types.ts";
+import type { Message, Provider, StopReason, ToolCallBlock, ToolDefinition, UserMessage } from "../ai/types.ts";
 
 /** 沙箱配置：bash 命令在沙箱里执行时，只能写这些目录 */
 export interface SandboxPolicy {
@@ -23,6 +23,8 @@ export interface ToolContext {
   sandbox?: SandboxPolicy;
   /** 工具执行过程中需要额外申请权限时用，比如命令被沙箱拦下后申请在沙箱外重新执行 */
   checkPermission?: CheckPermission;
+  /** 中止信号：用户中断这一轮时触发，耗时的工具应该尽快停下 */
+  signal?: AbortSignal;
 }
 
 export interface ToolResult {
@@ -63,11 +65,18 @@ export interface AgentOptions {
   checkPermission?: CheckPermission;
   /** 沙箱配置，原样放进每次工具调用的 context；不传表示不用沙箱 */
   sandbox?: SandboxPolicy;
+  /** 中止信号：触发后尽快停下这一轮，返回 stopReason 为 "aborted" */
+  signal?: AbortSignal;
+  /**
+   * 取出运行期间用户新输入、还没交给模型的消息，取出后队列清空。
+   * 主循环在合适的时机把它们插进对话，模型不用等这一轮结束就能看到
+   */
+  getQueuedMessages?: () => UserMessage[];
 }
 
 export interface AgentResult {
   /** 完整历史：传入的消息加上这次新增的 */
   messages: Message[];
-  /** 最后一条 assistant 消息的停止原因；因为请求次数用完而停下时为 "maxTurns" */
-  stopReason: StopReason | "maxTurns";
+  /** 最后一条 assistant 消息的停止原因；因为请求次数用完而停下时为 "maxTurns"；被中断时为 "aborted" */
+  stopReason: StopReason | "maxTurns" | "aborted";
 }
