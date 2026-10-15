@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import { FakeProvider, fakeReply, hangUntilAborted, text, thinking, toolCall } from "../ai/fake.ts";
 import type { ToolCallBlock } from "../ai/types.ts";
 import { runAgent } from "./loop.ts";
+import { DEFAULT_RULES, evaluatePermission } from "./permission.ts";
 import {
   createTaskTool,
   SUBAGENT_SYSTEM_SUFFIX,
@@ -95,12 +96,31 @@ describe("createTaskTool", () => {
     assert.equal(seen?.signal, context.signal);
   });
 
-  test("权限被拒绝时，子代理收到错误结果，照常继续", async () => {
-    const provider = new FakeProvider([fakeReply([toolCall("c1", "echo", { text: "x" })]), fakeReply([text("被拒绝了")])]);
-    const tool = taskTool(provider);
-    const result = await tool.execute(ARGS, { cwd: "/work", checkPermission: async () => ({ allowed: false }) });
-    assert.deepEqual(result, { content: "被拒绝了", isError: false });
-    const toolResult = provider.requests[1]?.messages.at(-1);
+  test("task 默认放行，子代理内部权限被拒绝时收到错误结果，照常继续", async () => {
+    const provider = new FakeProvider([
+      fakeReply([toolCall("t1", TASK_TOOL_NAME, ARGS)]),
+      fakeReply([toolCall("c1", "echo", { text: "x" })]),
+      fakeReply([text("被拒绝了")]),
+      fakeReply([text("收到汇报")]),
+    ]);
+    const contexts: ToolContext[] = [];
+    const asked: string[] = [];
+    const result = await runAgent([{ role: "user", content: "执行任务" }], {
+      provider,
+      system: SYSTEM,
+      tools: [taskTool(provider, { createTools: () => [echoTool(contexts)] })],
+      cwd: "/work",
+      checkPermission: async (call) => {
+        const action = evaluatePermission(DEFAULT_RULES, call.name, call.arguments);
+        if (action === "ask") asked.push(call.name);
+        return { allowed: action === "allow" };
+      },
+    });
+    assert.deepEqual(asked, ["echo"]);
+    assert.equal(contexts.length, 0);
+    const report = result.messages[2];
+    assert.equal(report?.role === "toolResult" && report.content, "被拒绝了");
+    const toolResult = provider.requests[2]?.messages.at(-1);
     assert.equal(toolResult?.role === "toolResult" && toolResult.isError, true);
   });
 

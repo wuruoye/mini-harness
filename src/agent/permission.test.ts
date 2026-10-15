@@ -108,6 +108,7 @@ describe("evaluatePermission", () => {
 
   test("默认规则", () => {
     assert.equal(evaluatePermission(DEFAULT_RULES, "read_file", { path: "a.txt" }), "allow");
+    assert.equal(evaluatePermission(DEFAULT_RULES, "task", { description: "查找定义", prompt: "找出 foo 的定义" }), "allow");
     assert.equal(evaluatePermission(DEFAULT_RULES, "edit", { path: "a.txt" }), "ask");
     assert.equal(evaluatePermission(DEFAULT_RULES, "write_file", { path: "a.txt" }), "ask");
     assert.equal(evaluatePermission(DEFAULT_RULES, "bash", bash("git status")), "allow");

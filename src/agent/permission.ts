@@ -16,6 +16,7 @@ export interface PermissionRule {
 export const DEFAULT_RULES: PermissionRule[] = [
   { tool: "*", action: "ask" },
   { tool: "read_file", action: "allow" },
+  { tool: "task", action: "allow" },
   { tool: "bash", pattern: "pwd", action: "allow" },
   { tool: "bash", pattern: "ls*", action: "allow" },
   { tool: "bash", pattern: "git status*", action: "allow" },
