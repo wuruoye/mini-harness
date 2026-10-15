@@ -29,7 +29,7 @@ import { appendCompaction, appendMessage, createSession, listSessions, loadSessi
 import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
 import { loadedFromHistory, withNestedInstructions } from "./agent/nested-instructions.ts";
-import { createTaskTool } from "./agent/subagent.ts";
+import { createTaskTool, TASK_TOOL_NAME } from "./agent/subagent.ts";
 import { MarkdownStream, renderMarkdown } from "./ui/markdown.ts";
 import { LineTerminal, type Terminal } from "./ui/terminal.ts";
 import { InkTerminal } from "./ui/ink-terminal.ts";
@@ -129,7 +129,7 @@ const instructionFiles = await loadInstructionFiles({ cwd, gitRoot: env.gitRoot,
 const systemPrompt = buildSystemPrompt(instructionFiles, env);
 const tools = [
   ...createTools(loadedInstructions),
-  createTaskTool({ provider, system: systemPrompt, createTools }),
+  createTaskTool({ provider, system: systemPrompt, createTools, onEvent: printSubagentEvent }),
 ];
 
 /** 启动参数：--mode 权限模式，--continue 接着上次的会话，--resume <id> 打开指定会话 */
@@ -249,14 +249,39 @@ function printEvent(event: AgentEvent): void {
       }
       return;
     }
-    case "toolStart":
+    case "toolStart": {
       finishStreamLine();
-      terminal.print(styleText("cyan", `→ ${event.toolCall.name} ${JSON.stringify(event.toolCall.arguments)}`));
+      const { name, arguments: args } = event.toolCall;
+      // task 的参数里有很长的任务说明，只显示简短说明
+      const shown = name === TASK_TOOL_NAME ? String(args.description) : JSON.stringify(args);
+      terminal.print(styleText("cyan", `→ ${name} ${shown}`));
       return;
+    }
     case "toolEnd": {
       const { content, isError } = event.result;
       if (isError) terminal.print(styleText("red", `  ✗ ${preview(content)}`));
       else terminal.print(styleText("dim", `  ✓ ${content.length} 个字符`));
+      return;
+    }
+  }
+}
+
+/** 这一轮里子代理的回复，用来统计子代理的用量 */
+const subagentReplies: AssistantMessage[] = [];
+
+/** 子代理的工具调用缩进显示在 task 下面；正文不逐字显示，汇报作为 task 的结果交回主代理 */
+function printSubagentEvent(event: AgentEvent): void {
+  const prefix = styleText("dim", "  │ ");
+  switch (event.type) {
+    case "message":
+      if (event.message.role === "assistant") subagentReplies.push(event.message);
+      return;
+    case "toolStart":
+      terminal.print(prefix + styleText("cyan", preview(`→ ${event.toolCall.name} ${JSON.stringify(event.toolCall.arguments)}`)));
+      return;
+    case "toolEnd": {
+      const { content, isError } = event.result;
+      terminal.print(prefix + (isError ? styleText("red", `  ✗ ${preview(content)}`) : styleText("dim", `  ✓ ${content.length} 个字符`)));
       return;
     }
   }
@@ -528,6 +553,7 @@ while (true) {
   const writes: Promise<void>[] = [appendMessage(current, userMessage)];
 
   running = new AbortController();
+  subagentReplies.length = 0;
   terminal.setBusy(true);
   try {
     const result = await runAgent([...context, userMessage], {
@@ -556,6 +582,10 @@ while (true) {
       `输出 ${usage.outputTokens} token`,
       `上下文约 ${contextTokens(result.messages)} token`,
     ];
+    if (subagentReplies.length > 0) {
+      const sub = totalUsage(subagentReplies);
+      parts.push(`子代理请求 ${subagentReplies.length} 次，输入 ${sub.inputTokens}，缓存读 ${sub.cacheReadTokens}，输出 ${sub.outputTokens} token`);
+    }
     if (result.stopReason !== "stop" && result.stopReason !== "aborted") parts.push(`停止原因 ${result.stopReason}`);
     if (result.stopReason === "aborted") {
       finishStreamLine();
