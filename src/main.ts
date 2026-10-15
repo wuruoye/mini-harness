@@ -29,6 +29,7 @@ import { loadProjectEnv } from "./env.ts";
 import { appendCompaction, appendMessage, createSession, listSessions, loadSession, type Session } from "./agent/session.ts";
 import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
+import { loadedFromHistory, withNestedInstructions } from "./agent/nested-instructions.ts";
 
 loadProjectEnv();
 
@@ -104,7 +105,13 @@ function createProvider(): { provider: Provider; model: string } {
 }
 
 const { provider, model } = createProvider();
-const tools = [readFileTool, bashTool, editTool, writeFileTool];
+const loadedInstructions = new Set<string>();
+const tools = [
+  withNestedInstructions(readFileTool, "path", loadedInstructions),
+  bashTool,
+  withNestedInstructions(editTool, "path", loadedInstructions),
+  withNestedInstructions(writeFileTool, "path", loadedInstructions),
+];
 // 本次会话的权限规则；回答「本次会话都允许」时会往后追加
 const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
@@ -478,6 +485,9 @@ while (true) {
 
   // 发给模型的是压缩后的上下文；会话里仍然保存全部消息
   const context = buildContext(current.messages, current.compaction);
+  // 每一轮都按这次发给模型的上下文重建，恢复会话、/new、压缩之后都不用单独处理
+  loadedInstructions.clear();
+  for (const path of loadedFromHistory(context)) loadedInstructions.add(path);
   const userMessage: Message = { role: "user", content: input };
   // 每条新消息产生时立刻写进会话文件；写文件是异步的，先收集起来，这一轮结束后统一等待
   const writes: Promise<void>[] = [appendMessage(current, userMessage)];
