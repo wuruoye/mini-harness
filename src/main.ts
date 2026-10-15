@@ -30,6 +30,7 @@ import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
 import { loadedFromHistory, withNestedInstructions } from "./agent/nested-instructions.ts";
 import { createTaskTool, TASK_TOOL_NAME } from "./agent/subagent.ts";
+import { createSkillTool, expandSkillCommand, formatSkillsSection, loadSkills, skillRoots } from "./agent/skills.ts";
 import { MarkdownStream, renderMarkdown } from "./ui/markdown.ts";
 import { LineTerminal, type Terminal } from "./ui/terminal.ts";
 import { InkTerminal } from "./ui/ink-terminal.ts";
@@ -118,6 +119,7 @@ function createTools(loaded = new Set<string>()): Tool[] {
     bashTool,
     withNestedInstructions(editTool, "path", loaded),
     withNestedInstructions(writeFileTool, "path", loaded),
+    ...(skills.length > 0 ? [createSkillTool(skills)] : []),
   ];
 }
 
@@ -126,7 +128,14 @@ const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
 const env = await detectEnvironment(cwd, new Date());
 const instructionFiles = await loadInstructionFiles({ cwd, gitRoot: env.gitRoot, globalDir: join(homedir(), ".mini-harness") });
-const systemPrompt = buildSystemPrompt(instructionFiles, env);
+const { skills, diagnostics: skillDiagnostics } = await loadSkills(skillRoots({
+  cwd,
+  home: homedir(),
+  extra: (process.env.MH_SKILL_DIRS ?? "").split(":").map((dir) => dir.trim()).filter((dir) => dir !== ""),
+}));
+const systemPrompt = [buildSystemPrompt(instructionFiles, env), formatSkillsSection(skills)]
+  .filter((part) => part !== "")
+  .join("\n\n");
 const tools = [
   ...createTools(loadedInstructions),
   createTaskTool({ provider, system: systemPrompt, createTools, onEvent: printSubagentEvent }),
@@ -475,6 +484,10 @@ terminal.print(
 );
 terminal.print(describeMode());
 terminal.setFooter(`${mode} · ${model}`);
+terminal.print(styleText("dim", `已加载 ${skills.length} 个技能`));
+for (const diagnostic of skillDiagnostics) {
+  terminal.print(styleText("yellow", `技能警告：${diagnostic.file}：${diagnostic.message}`));
+}
 if (instructionFiles.length > 0) {
   terminal.print(styleText("dim", `已加载项目指令：${instructionFiles.map((file) => file.path).join("、")}`));
 }
@@ -527,6 +540,13 @@ while (true) {
     continue;
   }
   if (input === "") continue;
+  let userContent: string;
+  try {
+    userContent = await expandSkillCommand(input, skills) ?? input;
+  } catch (err) {
+    terminal.error(styleText("red", err instanceof Error ? err.message : String(err)));
+    continue;
+  }
 
   if (!session) {
     session = await createSession(SESSION_BASE, cwd);
@@ -548,7 +568,7 @@ while (true) {
   // 每一轮都按这次发给模型的上下文重建，恢复会话、/new、压缩之后都不用单独处理
   loadedInstructions.clear();
   for (const path of loadedFromHistory(context)) loadedInstructions.add(path);
-  const userMessage: Message = { role: "user", content: input };
+  const userMessage: Message = { role: "user", content: userContent };
   // 每条新消息产生时立刻写进会话文件；写文件是异步的，先收集起来，这一轮结束后统一等待
   const writes: Promise<void>[] = [appendMessage(current, userMessage)];
 
