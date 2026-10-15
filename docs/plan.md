@@ -15,7 +15,7 @@
 | 参数校验 | zod | 校验模型传来的工具参数，同一份定义转成 JSON Schema 发给模型 |
 | HTTP | 内置 `fetch` | 不用厂商 SDK |
 | 子进程 | `node:child_process` | |
-| 界面 | readline | 以后再换 Ink |
+| 界面 | Ink | 用 React 写终端界面；Node 不支持直接运行 .tsx，组件手写 `createElement`，不用 JSX。输入不是终端时仍用 readline 按行读 |
 
 ## 分层
 
