@@ -84,6 +84,7 @@ function createProvider(): { provider: Provider; model: string } {
       model,
       baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
       effort: effort as AnthropicEffort | undefined,
+      ...(process.env.MH_PROMPT_CACHE === "off" ? { cache: false } : {}),
       fetch: rawSavingFetch("anthropic"),
     });
     return { provider, model: `anthropic ${model}` };
@@ -504,6 +505,7 @@ while (true) {
       `请求 ${turns} 次`,
       `输入 ${usage.inputTokens}`,
       `缓存读 ${usage.cacheReadTokens}`,
+      `缓存写 ${usage.cacheWriteTokens}`,
       `输出 ${usage.outputTokens} token`,
       `上下文约 ${contextTokens(result.messages)} token`,
     ];

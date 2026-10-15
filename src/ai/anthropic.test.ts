@@ -39,8 +39,8 @@ describe("toAnthropicRequest", () => {
     const body = toAnthropicRequest(request([{ role: "user", content: "hi" }]), OPTIONS);
     assert.equal(body.model, MODEL);
     assert.equal(body.max_tokens, DEFAULT_MAX_TOKENS);
-    assert.equal(body.system, "你是测试助手");
     assert.equal(body.stream, true);
+    assert.equal(toAnthropicRequest(request([]), { ...OPTIONS, cache: false }).system, "你是测试助手");
     assert.equal(toAnthropicRequest(request([]), { ...OPTIONS, maxTokens: 1000 }).max_tokens, 1000);
   });
 
@@ -128,6 +128,43 @@ describe("toAnthropicRequest", () => {
     const onlyThinking = fromAnthropic(fakeReply([thinking("想了想", "sig")]), "claude-sonnet-5-5");
     const body = toAnthropicRequest(request([{ role: "user", content: "hi" }, onlyThinking]), OPTIONS);
     assert.deepEqual(body.messages, [{ role: "user", content: "hi" }]);
+  });
+});
+
+describe("toAnthropicRequest 的提示缓存", () => {
+  /** 一段包含各种消息的对话，用来确认缓存开关不影响消息转换 */
+  function conversation(): Message[] {
+    const assistant = fromAnthropic(fakeReply([thinking("想想", "sig"), text("我来看看"), toolCall("a", "echo", { text: "x" })]));
+    return [{ role: "user", content: "go" }, assistant, toolResult("a", "1"), { role: "user", content: "继续" }];
+  }
+
+  test("默认开启：系统提示转成一个带缓存标记的文本块，请求顶层也带缓存标记", () => {
+    const body = toAnthropicRequest(request([{ role: "user", content: "hi" }]), OPTIONS);
+    assert.deepEqual(body.system, [{ type: "text", text: "你是测试助手", cache_control: { type: "ephemeral" } }]);
+    assert.deepEqual(body.cache_control, { type: "ephemeral" });
+    assert.deepEqual(toAnthropicRequest(request([{ role: "user", content: "hi" }]), { ...OPTIONS, cache: true }), body);
+  });
+
+  test("cache 为 false 时系统提示是字符串，请求里没有任何缓存标记", () => {
+    const body = toAnthropicRequest(request(conversation(), [echoDef]), { ...OPTIONS, cache: false });
+    assert.equal(body.system, "你是测试助手");
+    assert.equal(JSON.stringify(body).includes("cache_control"), false);
+  });
+
+  test("系统提示为空时不带 system 字段，开启缓存时顶层仍带缓存标记", () => {
+    const empty: ModelRequest = { ...request([{ role: "user", content: "hi" }]), system: "" };
+    const cached = toAnthropicRequest(empty, OPTIONS);
+    assert.equal("system" in cached, false);
+    assert.deepEqual(cached.cache_control, { type: "ephemeral" });
+    assert.equal("system" in toAnthropicRequest(empty, { ...OPTIONS, cache: false }), false);
+  });
+
+  test("缓存开关不影响消息和工具定义，消息里不加缓存标记", () => {
+    const on = toAnthropicRequest(request(conversation(), [echoDef]), OPTIONS);
+    const off = toAnthropicRequest(request(conversation(), [echoDef]), { ...OPTIONS, cache: false });
+    assert.deepEqual(on.messages, off.messages);
+    assert.deepEqual(on.tools, off.tools);
+    assert.equal(JSON.stringify([on.messages, on.tools]).includes("cache_control"), false);
   });
 });
 

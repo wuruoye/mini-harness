@@ -2,9 +2,19 @@
 // 请求：https://platform.claude.com/docs/en/api/messages
 // 流式事件：https://platform.claude.com/docs/en/build-with-claude/streaming
 
+/**
+ * 缓存标记：标在哪个块上，请求从开头到这个块为止的内容都会被缓存。
+ * ttl 不填是 5 分钟；读缓存会把时间重新算起
+ */
+export interface AnthropicCacheControl {
+  type: "ephemeral";
+  ttl?: "5m" | "1h";
+}
+
 export interface AnthropicTextBlock {
   type: "text";
   text: string;
+  cache_control?: AnthropicCacheControl;
 }
 
 export interface AnthropicThinkingBlock {
@@ -45,10 +55,13 @@ export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export interface AnthropicRequestBody {
   model: string;
   max_tokens: number;
-  system: string;
+  /** 系统提示：普通字符串，或者文本块数组（要加缓存标记时用数组形式） */
+  system?: string | AnthropicTextBlock[];
   messages: AnthropicMessage[];
   tools?: AnthropicTool[];
   output_config?: { effort: AnthropicEffort };
+  /** 顶层的自动缓存：服务端把缓存位置放在最后一个能缓存的块上，随对话变长自动往后移 */
+  cache_control?: AnthropicCacheControl;
   stream: true;
 }
 

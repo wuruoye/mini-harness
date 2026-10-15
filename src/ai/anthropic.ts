@@ -23,6 +23,8 @@ export interface AnthropicOptions {
   maxTokens?: number;
   /** 思考深度，不填就用模型的默认值 */
   effort?: AnthropicEffort;
+  /** 是否开启提示缓存，默认开启 */
+  cache?: boolean;
   /** 测试时注入假的 fetch，不填用全局 fetch */
   fetch?: typeof fetch;
 }
@@ -37,15 +39,29 @@ export interface AnthropicOptions {
  * - thinking 块只有在「消息来自 anthropic、message.model 等于 options.model、有签名」时才原样带回，否则省略
  * - 转换后没有任何内容的 assistant 消息整条省略
  * - 连续的工具结果合并成一条 user 消息，每个结果是一个 tool_result 块
+ * - 系统提示为空字符串时不带 system 字段
+ * - 缓存开启时（options.cache 不是 false）：
+ *   - system 改成只有一个文本块的数组，块上标 cache_control: { type: "ephemeral" }。
+ *     请求的拼接顺序是「工具定义 → 系统提示 → 消息」，这个标记覆盖工具定义和系统提示这段稳定的前缀
+ *   - 请求顶层带 cache_control: { type: "ephemeral" }，由服务端把缓存位置放在最后一个可缓存的块上，随对话往后移
+ *   - 消息的转换不受影响，不在消息里加缓存标记
+ *   缓存关闭时，system 仍是字符串，请求里不出现任何 cache_control
  */
 export function toAnthropicRequest(request: ModelRequest, options: AnthropicOptions): AnthropicRequestBody {
   const body: AnthropicRequestBody = {
     model: options.model,
     max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-    system: request.system,
     messages: [],
     stream: true,
   };
+
+  const cacheEnabled = options.cache !== false;
+  if (request.system !== "") {
+    body.system = cacheEnabled
+      ? [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }]
+      : request.system;
+  }
+  if (cacheEnabled) body.cache_control = { type: "ephemeral" };
 
   if (request.tools.length > 0) {
     body.tools = request.tools.map((tool) => ({
