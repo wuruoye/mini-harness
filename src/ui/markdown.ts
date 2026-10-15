@@ -3,7 +3,7 @@
 // 这里只把文字转成带样式的字符串，不写终端。样式函数由调用方传入：运行时传 node:util 的 styleText，
 // 测试时传一个输出 <bold>…</bold> 这类标记的函数。
 
-import { stripVTControlCharacters } from "node:util";
+import stringWidth from "string-width";
 
 /** 用到的样式，名字和 styleText 的格式名一致 */
 export type StyleFormat = "bold" | "italic" | "underline" | "dim" | "cyan" | "green";
@@ -31,29 +31,11 @@ export const STYLES = {
 export const RULE_WIDTH = 40;
 
 /**
- * 文字在终端里占几格，表格按它算列宽。
- * - 中日韩文字和全角符号占 2 格，其他字符占 1 格
- * - ANSI 控制序列（比如颜色 \x1b[1m）不占宽度
+ * 文字在终端里占几格，表格按它算列宽。和 Ink 用同一个 string-width 计算，折行结果才一致：
+ * 中日韩文字、全角符号和 emoji 占 2 格，组合符号和零宽字符不占宽度，ANSI 控制序列（比如颜色 \x1b[1m）也不占宽度
  */
 export function displayWidth(text: string): number {
-  let width = 0;
-  for (const char of stripVTControlCharacters(text)) {
-    const code = char.codePointAt(0)!;
-    const wide =
-      (code >= 0x1100 && code <= 0x115f) ||
-      code === 0x2329 || code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff01 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x1b000 && code <= 0x1b2ff) ||
-      (code >= 0x20000 && code <= 0x3fffd);
-    width += wide ? 2 : 1;
-  }
-  return width;
+  return stringWidth(text);
 }
 
 /**

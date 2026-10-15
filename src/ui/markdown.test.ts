@@ -66,6 +66,13 @@ describe("displayWidth", () => {
     assert.equal(displayWidth("，"), 2);
     assert.equal(displayWidth("\x1b[1m中\x1b[22m"), 2);
   });
+
+  test("emoji 占 2 格，组合符号和零宽连接符不占宽度", () => {
+    assert.equal(displayWidth("👍"), 2);
+    assert.equal(displayWidth("👨‍👩‍👧"), 2);
+    assert.equal(displayWidth("❤️"), 2);
+    assert.equal(displayWidth("e\u0301"), 1);
+  });
 });
 
 describe("renderInline", () => {

@@ -3,8 +3,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { parseArgs, stripVTControlCharacters, styleText } from "node:util";
+import { parseArgs, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
@@ -31,6 +30,9 @@ import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
 import { loadedFromHistory, withNestedInstructions } from "./agent/nested-instructions.ts";
 import { MarkdownStream, renderMarkdown } from "./ui/markdown.ts";
+import { LineTerminal, type Terminal } from "./ui/terminal.ts";
+import { InkTerminal } from "./ui/ink-terminal.ts";
+import { loadHistory } from "./ui/input-history.ts";
 
 loadProjectEnv();
 
@@ -168,6 +170,23 @@ const sandboxPolicy: SandboxPolicy = {
 
 let mode = initialMode();
 
+/** 输入历史放在 ~/.mini-harness/history.jsonl */
+const HISTORY_FILE = join(homedir(), ".mini-harness", "history.jsonl");
+
+/** 在终端里用 Ink 的输入框；输入或输出不是终端时（比如管道）按行读写 */
+async function createTerminal(): Promise<Terminal> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return new LineTerminal();
+  let history: string[] = [];
+  try {
+    history = await loadHistory(HISTORY_FILE);
+  } catch (err) {
+    console.error(styleText("red", `读取输入历史失败：${err instanceof Error ? err.message : String(err)}`));
+  }
+  return new InkTerminal(history, HISTORY_FILE);
+}
+
+const terminal = await createTerminal();
+
 function describeMode(): string {
   const text = `权限模式 ${mode}：${PERMISSION_MODES[mode]}`;
   if (mode === "bypass") return styleText("red", `${text}。建议只在容器或临时目录里这样用`);
@@ -186,25 +205,11 @@ function preview(text: string, max = 120): string {
 // 记录当前回复已经逐段打印过的内容，完整消息到达后避免重复打印。
 const streamedTypes = new Set<"text" | "thinking">();
 let streamType: "text" | "thinking" | undefined;
-let streamLineOpen = false;
 let markdown = new MarkdownStream(styleText);
 
-function writeStream(text: string): void {
-  if (text === "") return;
-  process.stdout.write(text);
-  const visible = stripVTControlCharacters(text);
-  if (visible !== "") streamLineOpen = !visible.endsWith("\n");
-}
-
-/** 插话回显只补换行，保留还在等后续内容的 Markdown 格式。 */
-function breakStreamLine(): void {
-  if (streamLineOpen) process.stdout.write("\n");
-  streamLineOpen = false;
-}
-
 function finishStreamLine(): void {
-  writeStream(markdown.end());
-  breakStreamLine();
+  terminal.stream(markdown.end());
+  terminal.endLine();
   markdown = new MarkdownStream(styleText);
   streamType = undefined;
 }
@@ -215,8 +220,8 @@ function printEvent(event: AgentEvent): void {
       if (event.message.role !== "assistant") return;
       finishStreamLine();
       for (const block of event.message.content) {
-        if (block.type === "text" && block.text && !streamedTypes.has("text")) console.log(renderMarkdown(block.text, styleText));
-        else if (block.type === "thinking" && block.thinking && !streamedTypes.has("thinking")) console.log(styleText("dim", block.thinking));
+        if (block.type === "text" && block.text && !streamedTypes.has("text")) terminal.print(renderMarkdown(block.text, styleText));
+        else if (block.type === "thinking" && block.thinking && !streamedTypes.has("thinking")) terminal.print(styleText("dim", block.thinking));
       }
       streamedTypes.clear();
       return;
@@ -225,10 +230,10 @@ function printEvent(event: AgentEvent): void {
       const { delta } = event;
       if (delta.type === "toolCallStart") {
         finishStreamLine();
-        console.log(styleText("cyan", `正在准备调用工具 ${delta.name}……`));
+        terminal.print(styleText("cyan", `正在准备调用工具 ${delta.name}……`));
       } else if (delta.text !== "") {
         if (streamType !== undefined && streamType !== delta.type) finishStreamLine();
-        writeStream(delta.type === "thinking" ? styleText("dim", delta.text) : markdown.push(delta.text));
+        terminal.stream(delta.type === "thinking" ? styleText("dim", delta.text) : markdown.push(delta.text));
         streamedTypes.add(delta.type);
         streamType = delta.type;
       }
@@ -236,12 +241,12 @@ function printEvent(event: AgentEvent): void {
     }
     case "toolStart":
       finishStreamLine();
-      console.log(styleText("cyan", `→ ${event.toolCall.name} ${JSON.stringify(event.toolCall.arguments)}`));
+      terminal.print(styleText("cyan", `→ ${event.toolCall.name} ${JSON.stringify(event.toolCall.arguments)}`));
       return;
     case "toolEnd": {
       const { content, isError } = event.result;
-      if (isError) console.log(styleText("red", `  ✗ ${preview(content)}`));
-      else console.log(styleText("dim", `  ✓ ${content.length} 个字符`));
+      if (isError) terminal.print(styleText("red", `  ✗ ${preview(content)}`));
+      else terminal.print(styleText("dim", `  ✓ ${content.length} 个字符`));
       return;
     }
   }
@@ -283,7 +288,7 @@ async function openInitialSession(): Promise<Session | undefined> {
   if (cli.continue) {
     const [latest] = await listSessions(SESSION_BASE, cwd);
     if (!latest) {
-      console.log(styleText("dim", "这个目录还没有会话，将开始新会话"));
+      terminal.print(styleText("dim", "这个目录还没有会话，将开始新会话"));
       return undefined;
     }
     return loadSession(latest.file);
@@ -303,32 +308,30 @@ function formatTime(iso: string): string {
 /** 压缩一次上下文并写进会话，返回是否真的压缩了 */
 async function compactSession(target: Session): Promise<boolean> {
   const previous = target.compaction;
-  console.log(styleText("dim", "正在压缩上下文……"));
+  terminal.print(styleText("dim", "正在压缩上下文……"));
   const result = await compact(provider, target.messages, previous, COMPACT_KEEP);
   if (!result) {
-    console.log(styleText("dim", "没有可以压缩的内容"));
+    terminal.print(styleText("dim", "没有可以压缩的内容"));
     return false;
   }
   await appendCompaction(target, result);
   const after = contextTokens(buildContext(target.messages, result));
   const replaced = result.firstKeptIndex - (previous?.firstKeptIndex ?? 0);
-  console.log(styleText("dim", `[已压缩上下文：约 ${result.tokensBefore} → ${after} token，${replaced} 条消息换成了摘要]`));
+  terminal.print(styleText("dim", `[已压缩上下文：约 ${result.tokensBefore} → ${after} token，${replaced} 条消息换成了摘要]`));
   return true;
 }
 
 async function printSessions(): Promise<void> {
   const list = await listSessions(SESSION_BASE, cwd);
   if (list.length === 0) {
-    console.log(styleText("dim", "这个目录还没有会话"));
+    terminal.print(styleText("dim", "这个目录还没有会话"));
     return;
   }
   for (const info of list) {
     const mark = info.id === session?.id ? "*" : " ";
-    console.log(`${mark} ${info.id}  ${styleText("dim", `${formatTime(info.updatedAt)}  ${info.messageCount} 条`)}  ${info.preview}`);
+    terminal.print(`${mark} ${info.id}  ${styleText("dim", `${formatTime(info.updatedAt)}  ${info.messageCount} 条`)}  ${info.preview}`);
   }
 }
-
-const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
 
 /** 当前这一轮的中止控制器；没有在运行时为 undefined */
 let running: AbortController | undefined;
@@ -338,22 +341,20 @@ function onInterrupt(): void {
   if (running && !running.signal.aborted) {
     running.abort();
     finishStreamLine();
-    console.log(styleText("yellow", "正在中断这一轮……再按一次 Ctrl-C 退出程序"));
+    terminal.print(styleText("yellow", "正在中断这一轮……再按一次 Ctrl-C 退出程序"));
     // 正在等权限询问的回答的话，让它马上返回
     for (const resolve of waiting.splice(0)) resolve(undefined);
     return;
   }
-  process.exit(130);
+  void terminal.close().then(() => process.exit(130));
 }
-// 在终端里 Ctrl-C 由 readline 收到；输入来自管道时，是进程收到 SIGINT 信号
-rl.on("SIGINT", onInterrupt);
-process.on("SIGINT", onInterrupt);
+terminal.onInterrupt(onInterrupt);
 
 // 所有输入行进同一个队列，主循环读问题、权限询问读回答，都按顺序从这里取。
 // 这样运行中提前输入的内容，或者管道一次送进来的多行，都不会被读错位置
 const pendingLines: string[] = [];
 const waiting: ((line: string | undefined) => void)[] = [];
-// 按 Ctrl-D（或管道输入读完）后 readline 关闭，之后读不到新的行
+// 按 Ctrl-D（或管道输入读完）后输入结束，之后读不到新的行
 let closed = false;
 
 // 在终端里，模型干活时输入的内容先排队，由主循环在这一步完成后插进对话；
@@ -361,18 +362,18 @@ let closed = false;
 const steerable = process.stdin.isTTY === true;
 const steering: UserMessage[] = [];
 
-rl.on("line", (line) => {
+terminal.onLine((line) => {
   const resolve = waiting.shift();
   if (resolve) resolve(line);
   else if (running && steerable) {
     if (line.trim() !== "") {
       steering.push({ role: "user", content: line });
-      breakStreamLine();
-      console.log(styleText("dim", "  （收到，会在这一步完成后交给模型）"));
+      terminal.endLine();
+      terminal.print(styleText("dim", "  （收到，会在这一步完成后交给模型）"));
     }
   } else pendingLines.push(line);
 });
-rl.on("close", () => {
+terminal.onClose(() => {
   closed = true;
   for (const resolve of waiting.splice(0)) resolve(undefined);
 });
@@ -384,10 +385,14 @@ function nextLine(): Promise<string | undefined> {
   return new Promise((resolve) => waiting.push(resolve));
 }
 
-/** 显示问题，读用户的回答 */
-function ask(query: string): Promise<string | undefined> {
-  process.stdout.write(query);
-  return nextLine();
+/** 显示问题，读用户的回答；回答不进输入历史 */
+async function ask(question: string): Promise<string | undefined> {
+  terminal.print(question);
+  terminal.setPrompt("  > ", { history: false });
+  terminal.showPrompt();
+  const answer = await nextLine();
+  terminal.setPrompt(promptLabel());
+  return answer;
 }
 
 /** 按规则判断；需要询问时在命令行里问用户。reason 是工具额外给出的说明，询问前先显示 */
@@ -395,16 +400,14 @@ async function checkPermission(call: ToolCallBlock, reason?: string): Promise<Pe
   const action = applyMode(mode, evaluatePermission(rules, call.name, call.arguments), call.name, call.arguments, cwd);
   if (action === "allow") return { allowed: true };
   if (action === "deny") {
-    console.log(styleText("red", "  权限规则禁止这个操作，已拒绝"));
+    terminal.print(styleText("red", "  权限规则禁止这个操作，已拒绝"));
     return { allowed: false, reason: "权限规则禁止这个操作" };
   }
 
-  if (reason) console.log(styleText("yellow", `  ${reason}`));
+  if (reason) terminal.print(styleText("yellow", `  ${reason}`));
   const subject = permissionSubject(call.name, call.arguments);
   const always = subject ? `本次会话都允许「${subject}」` : `本次会话都允许 ${call.name}`;
-  const answer = await ask(
-    styleText("yellow", `  需要确认：[y] 允许  [a] ${always}  [n] 拒绝，或者直接输入拒绝的理由\n  `) + "> ",
-  );
+  const answer = await ask(styleText("yellow", `  需要确认：[y] 允许  [a] ${always}  [n] 拒绝，或者直接输入拒绝的理由`));
   if (answer === undefined) {
     return { allowed: false, reason: running?.signal.aborted ? "用户中断了这一轮" : "没有办法向用户确认" };
   }
@@ -419,25 +422,30 @@ async function checkPermission(call: ToolCallBlock, reason?: string): Promise<Pe
   return { allowed: false, reason: reply };
 }
 
-function prompt(): void {
-  // 不是默认模式时，在提示符前面标出来
-  rl.setPrompt(mode === "auto" ? "> " : `[${mode}] > `);
-  if (!closed) rl.prompt();
+/** 不是默认模式时，在提示符前面标出来 */
+function promptLabel(): string {
+  return mode === "auto" ? "> " : `[${mode}] > `;
 }
 
-console.log(
+function prompt(): void {
+  terminal.setPrompt(promptLabel());
+  if (!closed) terminal.showPrompt();
+}
+
+terminal.print(
   styleText(
     "dim",
     `模型 ${model}，工作目录 ${cwd}。输入 /exit 或按 Ctrl-D 退出，/mode 切换权限模式，/sessions 列出会话，/new 开新会话，/compact 压缩上下文。`,
   ),
 );
-console.log(describeMode());
+terminal.print(describeMode());
+terminal.setFooter(`${mode} · ${model}`);
 if (instructionFiles.length > 0) {
-  console.log(styleText("dim", `已加载项目指令：${instructionFiles.map((file) => file.path).join("、")}`));
+  terminal.print(styleText("dim", `已加载项目指令：${instructionFiles.map((file) => file.path).join("、")}`));
 }
 session = await openInitialSession();
 if (session) {
-  console.log(styleText("dim", `已恢复会话 ${session.id}，共 ${session.messages.length} 条消息`));
+  terminal.print(styleText("dim", `已恢复会话 ${session.id}，共 ${session.messages.length} 条消息`));
 }
 
 while (true) {
@@ -450,15 +458,16 @@ while (true) {
     const next = input.slice("/mode".length).trim();
     if (next === "") {
       for (const [name, text] of Object.entries(PERMISSION_MODES)) {
-        console.log(`${name === mode ? "*" : " "} ${name.padEnd(12)} ${styleText("dim", text)}`);
+        terminal.print(`${name === mode ? "*" : " "} ${name.padEnd(12)} ${styleText("dim", text)}`);
       }
     } else if (next === "auto" && process.platform !== "darwin") {
-      console.log(styleText("red", "auto 模式依赖 macOS 的沙箱"));
+      terminal.print(styleText("red", "auto 模式依赖 macOS 的沙箱"));
     } else if (isPermissionMode(next)) {
       mode = next;
-      console.log(describeMode());
+      terminal.print(describeMode());
+      terminal.setFooter(`${mode} · ${model}`);
     } else {
-      console.log(styleText("red", `没有这个模式：${next}。输入 /mode 查看所有模式`));
+      terminal.print(styleText("red", `没有这个模式：${next}。输入 /mode 查看所有模式`));
     }
     continue;
   }
@@ -467,26 +476,26 @@ while (true) {
     continue;
   }
   if (input === "/compact") {
-    if (!session) console.log(styleText("dim", "还没有对话，不需要压缩"));
+    if (!session) terminal.print(styleText("dim", "还没有对话，不需要压缩"));
     else {
       try {
         await compactSession(session);
       } catch (err) {
-        console.error(styleText("red", `压缩失败：${err instanceof Error ? err.message : String(err)}`));
+        terminal.error(styleText("red", `压缩失败：${err instanceof Error ? err.message : String(err)}`));
       }
     }
     continue;
   }
   if (input === "/new") {
     session = undefined;
-    console.log(styleText("dim", "已开始新会话"));
+    terminal.print(styleText("dim", "已开始新会话"));
     continue;
   }
   if (input === "") continue;
 
   if (!session) {
     session = await createSession(SESSION_BASE, cwd);
-    console.log(styleText("dim", `会话保存在 ${session.file}`));
+    terminal.print(styleText("dim", `会话保存在 ${session.file}`));
   }
   const current = session;
 
@@ -495,7 +504,7 @@ while (true) {
     try {
       await compactSession(current);
     } catch (err) {
-      console.error(styleText("red", `压缩失败，这次先不压缩：${err instanceof Error ? err.message : String(err)}`));
+      terminal.error(styleText("red", `压缩失败，这次先不压缩：${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -509,6 +518,7 @@ while (true) {
   const writes: Promise<void>[] = [appendMessage(current, userMessage)];
 
   running = new AbortController();
+  terminal.setBusy(true);
   try {
     const result = await runAgent([...context, userMessage], {
       provider,
@@ -540,23 +550,24 @@ while (true) {
     if (result.stopReason === "aborted") {
       finishStreamLine();
       streamedTypes.clear();
-      console.log(styleText("yellow", "[已中断]"));
+      terminal.print(styleText("yellow", "[已中断]"));
     }
-    console.log(styleText("dim", `[${parts.join("，")}]`));
+    terminal.print(styleText("dim", `[${parts.join("，")}]`));
   } catch (err) {
     // 已经产生的消息都已写进会话，下次接着这些历史继续
     finishStreamLine();
     streamedTypes.clear();
-    console.error(styleText("red", `出错了：${err instanceof Error ? err.message : String(err)}`));
+    terminal.error(styleText("red", `出错了：${err instanceof Error ? err.message : String(err)}`));
   }
   running = undefined;
+  terminal.setBusy(false);
   // 主循环最后一次取队列之后才输入的内容，当作下一个问题
   pendingLines.push(...steering.splice(0).map((message) => message.content));
   try {
     await Promise.all(writes);
   } catch (err) {
-    console.error(styleText("red", `保存会话失败：${err instanceof Error ? err.message : String(err)}`));
+    terminal.error(styleText("red", `保存会话失败：${err instanceof Error ? err.message : String(err)}`));
   }
 }
 
-rl.close();
+await terminal.close();
