@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeProvider, fakeReply, hangUntilAborted, text, thinking, toolCall } from "../ai/fake.ts";
-import type { Message, ToolCallBlock, ToolResultMessage, UserMessage } from "../ai/types.ts";
+import type { AssistantMessage, Message, Provider, StreamDelta, ToolCallBlock, ToolResultMessage, UserMessage } from "../ai/types.ts";
 import { runAgent } from "./loop.ts";
 import type { AgentEvent, AgentOptions, PermissionDecision, Tool, ToolContext } from "./types.ts";
 
@@ -475,5 +475,90 @@ describe("排队的消息", () => {
     const provider2 = new FakeProvider([fakeReply([toolCall("1", "stopper")])]);
     await runAgent([user("x")], options(provider2, { tools: [stopper], signal: controller.signal, getQueuedMessages: q2.getQueuedMessages }));
     assert.equal(q2.calls, 0);
+  });
+});
+
+describe("流式增量", () => {
+  /**
+   * 按顺序处理每次请求的假 provider：先通过 onDelta 吐出给定的增量，再返回完整消息。
+   * 没用 FakeProvider，是为了让这几个测试只依赖主循环自己
+   */
+  function streamingProvider(...turns: { deltas: StreamDelta[]; reply: AssistantMessage }[]): Provider {
+    return {
+      async complete(_request, options) {
+        const turn = turns.shift();
+        if (!turn) throw new Error("没有更多的回复了");
+        for (const delta of turn.deltas) options?.onDelta?.(delta);
+        return structuredClone(turn.reply);
+      },
+    };
+  }
+
+  test("provider 的增量转成 delta 事件", async () => {
+    const provider = streamingProvider({
+      deltas: [{ type: "thinking", text: "嗯" }, { type: "text", text: "你" }, { type: "text", text: "好" }],
+      reply: fakeReply([text("你好")]),
+    });
+    const events: AgentEvent[] = [];
+    await runAgent([user("hi")], { provider, system: "", tools: [], cwd: "/", onEvent: (e) => events.push(e) });
+    assert.deepEqual(
+      events.filter((e) => e.type === "delta"),
+      [
+        { type: "delta", delta: { type: "thinking", text: "嗯" } },
+        { type: "delta", delta: { type: "text", text: "你" } },
+        { type: "delta", delta: { type: "text", text: "好" } },
+      ],
+    );
+  });
+
+  test("同一条回复的 delta 事件都在它的 message 事件之前", async () => {
+    const provider = streamingProvider(
+      {
+        deltas: [{ type: "text", text: "我来" }, { type: "toolCallStart", id: "1", name: "echo" }],
+        reply: fakeReply([text("我来"), toolCall("1", "echo", { text: "x" })]),
+      },
+      { deltas: [{ type: "text", text: "好了" }], reply: fakeReply([text("好了")]) },
+    );
+    const types: string[] = [];
+    await runAgent([user("hi")], {
+      provider,
+      system: "",
+      tools: [echoTool],
+      cwd: "/",
+      onEvent: (e) => types.push(e.type === "message" ? `message:${e.message.role}` : e.type),
+    });
+    assert.deepEqual(types, [
+      "delta",
+      "delta",
+      "message:assistant",
+      "toolStart",
+      "toolEnd",
+      "message:toolResult",
+      "delta",
+      "message:assistant",
+    ]);
+  });
+
+  test("被中断时已经发出的增量不影响历史", async () => {
+    const controller = new AbortController();
+    const provider: Provider = {
+      complete: (_request, options) =>
+        new Promise((_resolve, reject) => {
+          options?.onDelta?.({ type: "text", text: "说到一半" });
+          options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+          setTimeout(() => controller.abort(), 20);
+        }),
+    };
+    const events: AgentEvent[] = [];
+    const result = await runAgent([user("hi")], {
+      provider,
+      system: "",
+      tools: [],
+      cwd: "/",
+      signal: controller.signal,
+      onEvent: (e) => events.push(e),
+    });
+    assert.deepEqual(result, { messages: [user("hi")], stopReason: "aborted" });
+    assert.deepEqual(events, [{ type: "delta", delta: { type: "text", text: "说到一半" } }]);
   });
 });

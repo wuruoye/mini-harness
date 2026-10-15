@@ -23,6 +23,7 @@ export const DEFAULT_MAX_TURNS = 20;
  * - 排队的消息（options.getQueuedMessages），只在还会继续请求模型时（没中止、请求次数没用完）去取
  *   - 一轮工具结果都加进历史之后，取一次；取到的用户消息依次加进历史，并发 message 事件
  *   - 模型不再调用工具、本来要结束时，也取一次；取到了就加进历史接着请求，没取到才结束
+ * - 模型增量通过 delta 事件实时发出，只把完整回复加入历史。
  */
 export async function runAgent(messages: Message[], options: AgentOptions): Promise<AgentResult> {
   const { provider, system, tools, cwd, onEvent, checkPermission, signal, getQueuedMessages, maxTurns = DEFAULT_MAX_TURNS } = options;
@@ -39,7 +40,12 @@ export async function runAgent(messages: Message[], options: AgentOptions): Prom
 
     let assistant: AssistantMessage;
     try {
-      assistant = await provider.complete({ system, messages: history, tools: toolDefs }, { signal });
+      assistant = await provider.complete({ system, messages: history, tools: toolDefs }, {
+        signal,
+        onDelta: (delta) => {
+          if (!signal?.aborted) onEvent?.({ type: "delta", delta });
+        },
+      });
     } catch (err) {
       if (signal?.aborted) return { messages: history, stopReason: "aborted" };
       throw err;

@@ -10,7 +10,7 @@ import {
 } from "./anthropic.ts";
 import { fakeReply, text, thinking, toolCall } from "./fake.ts";
 import type { SseEvent } from "./sse.ts";
-import type { AssistantMessage, Message, ModelRequest, Provider, ToolDefinition, ToolResultMessage } from "./types.ts";
+import type { AssistantMessage, Message, ModelRequest, Provider, StreamDelta, ToolDefinition, ToolResultMessage } from "./types.ts";
 
 const MODEL = "claude-opus-5-5";
 const OPTIONS: AnthropicOptions = { apiKey: "test-key", model: MODEL };
@@ -383,5 +383,96 @@ describe("AnthropicProvider", () => {
       assert.match(err.message, /invalid x-api-key/);
       return true;
     });
+  });
+});
+
+/** 收集 onDelta 收到的增量 */
+function collector() {
+  const deltas: StreamDelta[] = [];
+  return { deltas, onDelta: (delta: StreamDelta) => void deltas.push(delta) };
+}
+
+describe("readAnthropicStream 的增量", () => {
+  test("text_delta 按顺序发出 text 增量，完整消息不受影响", async () => {
+    const { deltas, onDelta } = collector();
+    const message = await readAnthropicStream(
+      stream([
+        start(),
+        blockStart(0, { type: "text", text: "" }),
+        delta(0, { type: "text_delta", text: "" }),
+        delta(0, { type: "text_delta", text: "你" }),
+        delta(0, { type: "text_delta", text: "好" }),
+        blockStop(0),
+        messageDelta("end_turn"),
+        stop,
+      ]),
+      onDelta,
+    );
+    assert.deepEqual(deltas, [
+      { type: "text", text: "你" },
+      { type: "text", text: "好" },
+    ]);
+    assert.deepEqual(message.content, [text("你好")]);
+  });
+
+  test("thinking_delta 发出 thinking 增量，签名不算增量", async () => {
+    const { deltas, onDelta } = collector();
+    await readAnthropicStream(
+      stream([
+        start(),
+        blockStart(0, { type: "thinking", thinking: "", signature: "" }),
+        delta(0, { type: "thinking_delta", thinking: "" }),
+        delta(0, { type: "thinking_delta", thinking: "想" }),
+        delta(0, { type: "thinking_delta", thinking: "一想" }),
+        delta(0, { type: "signature_delta", signature: "sig" }),
+        blockStop(0),
+        messageDelta("end_turn"),
+        stop,
+      ]),
+      onDelta,
+    );
+    assert.deepEqual(deltas, [
+      { type: "thinking", text: "想" },
+      { type: "thinking", text: "一想" },
+    ]);
+  });
+
+  test("tool_use 块开始时发出 toolCallStart，参数片段不发；多种块按到达顺序", async () => {
+    const { deltas, onDelta } = collector();
+    const message = await readAnthropicStream(
+      stream([
+        start(),
+        blockStart(0, { type: "text", text: "" }),
+        delta(0, { type: "text_delta", text: "先读文件" }),
+        blockStop(0),
+        blockStart(1, { type: "tool_use", id: "toolu_1", name: "read_file", input: {} }),
+        delta(1, { type: "input_json_delta", partial_json: '{"path":' }),
+        delta(1, { type: "input_json_delta", partial_json: '"a.txt"}' }),
+        blockStop(1),
+        messageDelta("tool_use"),
+        stop,
+      ]),
+      onDelta,
+    );
+    assert.deepEqual(deltas, [
+      { type: "text", text: "先读文件" },
+      { type: "toolCallStart", id: "toolu_1", name: "read_file" },
+    ]);
+    assert.deepEqual(message.content, [text("先读文件"), toolCall("toolu_1", "read_file", { path: "a.txt" })]);
+  });
+
+  test("不传 onDelta 时照常工作", async () => {
+    const message = await readAnthropicStream(stream(textStream("end_turn")));
+    assert.deepEqual(message.content, [text("ok")]);
+  });
+
+  test("complete 把 onDelta 传给解析函数", async () => {
+    const events = textStream("end_turn");
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(events.map((e) => `event: ${e.event}\ndata: ${e.data}\n\n`).join(""), { status: 200 });
+    const provider: Provider = new AnthropicProvider({ ...OPTIONS, fetch });
+    const { deltas, onDelta } = collector();
+    await provider.complete(request([{ role: "user", content: "hi" }]), { onDelta });
+    assert.deepEqual(deltas, [{ type: "text", text: "ok" }]);
   });
 });

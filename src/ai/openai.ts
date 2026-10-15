@@ -1,6 +1,6 @@
 import type { OpenAIChunk, OpenAIRequestBody, OpenAIToolCall } from "./openai-types.ts";
 import { parseSse, type SseEvent } from "./sse.ts";
-import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest, Provider, StopReason } from "./types.ts";
+import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest, Provider, StopReason, StreamDelta } from "./types.ts";
 
 export const PROVIDER_NAME = "openai";
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -108,8 +108,12 @@ export function toOpenAIRequest(request: ModelRequest, options: OpenAIOptions): 
  * - usage：inputTokens 为 prompt_tokens 减去 cached_tokens，cacheReadTokens 为 cached_tokens，
  *   outputTokens 为 completion_tokens，cacheWriteTokens 为 0；没有 usage 数据块时全部为 0
  * - 没收到 [DONE] 就结束了要抛异常，信息里提到 [DONE]；收到了但从没拿到 finish_reason 也抛异常
+ * - 非空文字和推理片段通过 onDelta 发出；每个 index 的工具调用第一次拿到非空名字时发一次 toolCallStart
  */
-export async function readOpenAIStream(events: AsyncIterable<SseEvent>): Promise<AssistantMessage> {
+export async function readOpenAIStream(
+  events: AsyncIterable<SseEvent>,
+  onDelta?: (delta: StreamDelta) => void,
+): Promise<AssistantMessage> {
   let model = "";
   let text = "";
   let thinking = "";
@@ -117,6 +121,7 @@ export async function readOpenAIStream(events: AsyncIterable<SseEvent>): Promise
   let done = false;
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   const toolCalls = new Map<number, OpenAIToolCall>();
+  const startedToolCalls = new Set<number>();
 
   for await (const event of events) {
     if (event.data === "[DONE]") {
@@ -141,6 +146,8 @@ export async function readOpenAIStream(events: AsyncIterable<SseEvent>): Promise
 
       text += choice.delta.content ?? "";
       thinking += choice.delta.reasoning_content ?? "";
+      if (choice.delta.content) onDelta?.({ type: "text", text: choice.delta.content });
+      if (choice.delta.reasoning_content) onDelta?.({ type: "thinking", text: choice.delta.reasoning_content });
       for (const part of choice.delta.tool_calls ?? []) {
         const call: OpenAIToolCall = toolCalls.get(part.index) ?? {
           id: "",
@@ -149,6 +156,10 @@ export async function readOpenAIStream(events: AsyncIterable<SseEvent>): Promise
         };
         if (part.id !== undefined) call.id = part.id;
         if (part.function?.name !== undefined) call.function.name = part.function.name;
+        if (call.function.name !== "" && !startedToolCalls.has(part.index)) {
+          startedToolCalls.add(part.index);
+          onDelta?.({ type: "toolCallStart", id: call.id, name: call.function.name });
+        }
         call.function.arguments += part.function?.arguments ?? "";
         toolCalls.set(part.index, call);
       }
@@ -227,6 +238,6 @@ export class OpenAIProvider implements Provider {
       throw new Error("OpenAI 响应缺少数据流");
     }
 
-    return readOpenAIStream(parseSse(response.body));
+    return readOpenAIStream(parseSse(response.body), options.onDelta);
   }
 }

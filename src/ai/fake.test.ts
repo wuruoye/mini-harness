@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakeProvider, fakeReply, hangUntilAborted, text, toolCall } from "./fake.ts";
-import type { Message, ModelRequest } from "./types.ts";
+import type { Message, ModelRequest, StreamDelta } from "./types.ts";
 
 function request(messages: Message[]): ModelRequest {
   return { system: "", messages, tools: [] };
@@ -58,4 +58,17 @@ test("回复函数可以是异步的，并能拿到信号", async () => {
   const reply = await provider.complete(request([]), { signal: controller.signal });
   assert.deepEqual(reply.content, [text("异步")]);
   assert.equal(seen, controller.signal);
+});
+
+test("回复函数能拿到 onDelta，调用后增量传给调用方", async () => {
+  const deltas: StreamDelta[] = [];
+  const provider = new FakeProvider([
+    (_request: ModelRequest, _signal?: AbortSignal, onDelta?: (delta: StreamDelta) => void) => {
+      onDelta?.({ type: "text", text: "片段" });
+      return fakeReply([text("片段")]);
+    },
+  ]);
+  const reply = await provider.complete(request([]), { onDelta: (delta) => void deltas.push(delta) });
+  assert.deepEqual(deltas, [{ type: "text", text: "片段" }]);
+  assert.deepEqual(reply.content, [text("片段")]);
 });

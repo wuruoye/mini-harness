@@ -7,15 +7,23 @@ import type {
   ModelRequest,
   Provider,
   StopReason,
+  StreamDelta,
   TextBlock,
   ThinkingBlock,
   ToolCallBlock,
 } from "./types.ts";
 
-/** 一条脚本回复：固定的消息，或者根据请求现场生成（可以是异步的，能拿到中止信号） */
+/**
+ * 一条脚本回复：固定的消息，或者根据请求现场生成。
+ * 生成函数可以是异步的，能拿到中止信号；还能拿到 onDelta，用来模拟「先吐几段增量，再返回完整消息」
+ */
 export type FakeReply =
   | AssistantMessage
-  | ((request: ModelRequest, signal?: AbortSignal) => AssistantMessage | Promise<AssistantMessage>);
+  | ((
+      request: ModelRequest,
+      signal?: AbortSignal,
+      onDelta?: (delta: StreamDelta) => void,
+    ) => AssistantMessage | Promise<AssistantMessage>);
 
 export class FakeProvider implements Provider {
   /**
@@ -40,7 +48,7 @@ export class FakeProvider implements Provider {
       throw new Error(`FakeProvider：脚本只有 ${count - 1} 条回复，却收到了第 ${count} 个请求`);
     }
     // 返回拷贝，调用方修改返回的消息不会影响测试里用来比对的原对象
-    return structuredClone(typeof reply === "function" ? await reply(request, signal) : reply);
+    return structuredClone(typeof reply === "function" ? await reply(request, signal, options?.onDelta) : reply);
   }
 }
 

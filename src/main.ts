@@ -176,13 +176,40 @@ function preview(text: string, max = 120): string {
   return firstLine.length > max ? `${firstLine.slice(0, max)}…` : firstLine;
 }
 
+// 记录当前回复已经逐段打印过的内容，完整消息到达后避免重复打印。
+const streamedTypes = new Set<"text" | "thinking">();
+let streamType: "text" | "thinking" | undefined;
+let streamLineOpen = false;
+
+function finishStreamLine(): void {
+  if (streamLineOpen) process.stdout.write("\n");
+  streamLineOpen = false;
+  streamType = undefined;
+}
+
 function printEvent(event: AgentEvent): void {
   switch (event.type) {
     case "message": {
       if (event.message.role !== "assistant") return;
+      finishStreamLine();
       for (const block of event.message.content) {
-        if (block.type === "text" && block.text) console.log(block.text);
-        else if (block.type === "thinking" && block.thinking) console.log(styleText("dim", block.thinking));
+        if (block.type === "text" && block.text && !streamedTypes.has("text")) console.log(block.text);
+        else if (block.type === "thinking" && block.thinking && !streamedTypes.has("thinking")) console.log(styleText("dim", block.thinking));
+      }
+      streamedTypes.clear();
+      return;
+    }
+    case "delta": {
+      const { delta } = event;
+      if (delta.type === "toolCallStart") {
+        finishStreamLine();
+        console.log(styleText("cyan", `正在准备调用工具 ${delta.name}……`));
+      } else if (delta.text !== "") {
+        if (streamType !== undefined && streamType !== delta.type) finishStreamLine();
+        process.stdout.write(delta.type === "thinking" ? styleText("dim", delta.text) : delta.text);
+        streamedTypes.add(delta.type);
+        streamType = delta.type;
+        streamLineOpen = !delta.text.endsWith("\n");
       }
       return;
     }
@@ -288,7 +315,8 @@ let running: AbortController | undefined;
 function onInterrupt(): void {
   if (running && !running.signal.aborted) {
     running.abort();
-    console.log(styleText("yellow", "\n正在中断这一轮……再按一次 Ctrl-C 退出程序"));
+    finishStreamLine();
+    console.log(styleText("yellow", "正在中断这一轮……再按一次 Ctrl-C 退出程序"));
     // 正在等权限询问的回答的话，让它马上返回
     for (const resolve of waiting.splice(0)) resolve(undefined);
     return;
@@ -317,6 +345,7 @@ rl.on("line", (line) => {
   else if (running && steerable) {
     if (line.trim() !== "") {
       steering.push({ role: "user", content: line });
+      finishStreamLine();
       console.log(styleText("dim", "  （收到，会在这一步完成后交给模型）"));
     }
   } else pendingLines.push(line);
@@ -479,10 +508,16 @@ while (true) {
       `上下文约 ${contextTokens(result.messages)} token`,
     ];
     if (result.stopReason !== "stop" && result.stopReason !== "aborted") parts.push(`停止原因 ${result.stopReason}`);
-    if (result.stopReason === "aborted") console.log(styleText("yellow", "[已中断]"));
+    if (result.stopReason === "aborted") {
+      finishStreamLine();
+      streamedTypes.clear();
+      console.log(styleText("yellow", "[已中断]"));
+    }
     console.log(styleText("dim", `[${parts.join("，")}]`));
   } catch (err) {
     // 已经产生的消息都已写进会话，下次接着这些历史继续
+    finishStreamLine();
+    streamedTypes.clear();
     console.error(styleText("red", `出错了：${err instanceof Error ? err.message : String(err)}`));
   }
   running = undefined;

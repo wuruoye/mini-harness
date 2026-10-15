@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fakeReply, text, thinking, toolCall } from "./fake.ts";
 import { OpenAIProvider, readOpenAIStream, toOpenAIRequest, type OpenAIOptions } from "./openai.ts";
 import type { SseEvent } from "./sse.ts";
-import type { Message, ModelRequest, Provider, ToolDefinition, ToolResultMessage } from "./types.ts";
+import type { Message, ModelRequest, Provider, StreamDelta, ToolDefinition, ToolResultMessage } from "./types.ts";
 
 const MODEL = "gpt-test";
 const OPTIONS: OpenAIOptions = { apiKey: "test-key", model: MODEL };
@@ -326,5 +326,75 @@ describe("OpenAIProvider", () => {
       assert.match(err.message, /Incorrect API key/);
       return true;
     });
+  });
+});
+
+/** 收集 onDelta 收到的增量 */
+function collector() {
+  const deltas: StreamDelta[] = [];
+  return { deltas, onDelta: (delta: StreamDelta) => void deltas.push(delta) };
+}
+
+describe("readOpenAIStream 的增量", () => {
+  test("content 按顺序发出 text 增量，完整消息不受影响", async () => {
+    const { deltas, onDelta } = collector();
+    const message = await readOpenAIStream(stream([delta({ content: "你" }), delta({ content: "好" }), finish("stop"), DONE]), onDelta);
+    assert.deepEqual(deltas, [
+      { type: "text", text: "你" },
+      { type: "text", text: "好" },
+    ]);
+    assert.deepEqual(message.content, [text("你好")]);
+  });
+
+  test("reasoning_content 发出 thinking 增量，和文字按到达顺序", async () => {
+    const { deltas, onDelta } = collector();
+    await readOpenAIStream(
+      stream([delta({ reasoning_content: "先想" }), delta({ reasoning_content: "一想" }), delta({ content: "答案" }), finish("stop"), DONE]),
+      onDelta,
+    );
+    assert.deepEqual(deltas, [
+      { type: "thinking", text: "先想" },
+      { type: "thinking", text: "一想" },
+      { type: "text", text: "答案" },
+    ]);
+  });
+
+  test("每个工具调用只在第一次拿到名字时发一次 toolCallStart，参数片段不发", async () => {
+    const { deltas, onDelta } = collector();
+    await readOpenAIStream(
+      stream([
+        delta({ tool_calls: [{ index: 0, id: "call_a", type: "function", function: { name: "read_file", arguments: "" } }] }),
+        delta({ tool_calls: [{ index: 1, id: "call_b", type: "function", function: { name: "read_file", arguments: '{"pa' } }] }),
+        delta({ tool_calls: [{ index: 0, function: { arguments: '{"path":"a.txt"}' } }] }),
+        // 有的服务会在后面的片段里重复带上名字，也不能再发一次
+        delta({ tool_calls: [{ index: 1, function: { name: "read_file", arguments: 'th":"b.txt"}' } }] }),
+        finish("tool_calls"),
+        DONE,
+      ]),
+      onDelta,
+    );
+    assert.deepEqual(deltas, [
+      { type: "toolCallStart", id: "call_a", name: "read_file" },
+      { type: "toolCallStart", id: "call_b", name: "read_file" },
+    ]);
+  });
+
+  test("空字符串和 null 的 content 不发增量", async () => {
+    const { deltas, onDelta } = collector();
+    await readOpenAIStream(
+      stream([delta({ role: "assistant", content: "" }), delta({ content: null }), delta({ content: "x" }), finish("stop"), DONE]),
+      onDelta,
+    );
+    assert.deepEqual(deltas, [{ type: "text", text: "x" }]);
+  });
+
+  test("complete 把 onDelta 传给解析函数", async () => {
+    const events = [delta({ content: "ok" }), finish("stop"), DONE];
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(events.map((e) => `data: ${e.data}\n\n`).join(""), { status: 200 });
+    const provider: Provider = new OpenAIProvider({ ...OPTIONS, fetch });
+    const { deltas, onDelta } = collector();
+    await provider.complete(request([{ role: "user", content: "hi" }]), { onDelta });
+    assert.deepEqual(deltas, [{ type: "text", text: "ok" }]);
   });
 });

@@ -1,4 +1,4 @@
-import type { Message, Provider, StopReason, ToolCallBlock, ToolDefinition, UserMessage } from "../ai/types.ts";
+import type { Message, Provider, StopReason, StreamDelta, ToolCallBlock, ToolDefinition, UserMessage } from "../ai/types.ts";
 
 /** 沙箱配置：bash 命令在沙箱里执行时，只能写这些目录 */
 export interface SandboxPolicy {
@@ -43,6 +43,8 @@ export interface Tool {
 }
 
 export type AgentEvent =
+  /** 模型回复的增量；同一条回复的增量都在它的 message 事件之前发出 */
+  | { type: "delta"; delta: StreamDelta }
   /** 每往历史里新增一条消息发一次，传入的历史不算 */
   | { type: "message"; message: Message }
   /** 开始执行一个工具调用 */

@@ -7,7 +7,7 @@ import type {
   AnthropicUsage,
 } from "./anthropic-types.ts";
 import { parseSse, type SseEvent } from "./sse.ts";
-import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest, Provider, StopReason } from "./types.ts";
+import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest, Provider, StopReason, StreamDelta } from "./types.ts";
 
 export const PROVIDER_NAME = "anthropic";
 export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
@@ -117,8 +117,12 @@ export function toAnthropicRequest(request: ModelRequest, options: AnthropicOpti
  *   max_tokens、model_context_window_exceeded → "length"；refusal → "refusal"；其他值抛异常
  * - 收到 error 事件时抛异常，信息里带上错误类型和内容
  * - 流在 message_stop 之前就结束了也抛异常，信息里提到 message_stop
+ * - 非空文字和推理增量通过 onDelta 发出；tool_use 块开始时发 toolCallStart，签名和参数片段不发增量
  */
-export async function readAnthropicStream(events: AsyncIterable<SseEvent>): Promise<AssistantMessage> {
+export async function readAnthropicStream(
+  events: AsyncIterable<SseEvent>,
+  onDelta?: (delta: StreamDelta) => void,
+): Promise<AssistantMessage> {
   let model = "";
   let stopReason: StopReason | undefined;
   const usage: AnthropicUsage = {};
@@ -151,6 +155,7 @@ export async function readAnthropicStream(events: AsyncIterable<SseEvent>): Prom
           case "tool_use":
             blocks.set(data.index, { type: "toolCall", id: block.id, name: block.name, arguments: block.input });
             partialInputs.set(data.index, "");
+            onDelta?.({ type: "toolCallStart", id: block.id, name: block.name });
             break;
         }
         break;
@@ -160,10 +165,16 @@ export async function readAnthropicStream(events: AsyncIterable<SseEvent>): Prom
         const delta = data.delta;
         switch (delta.type) {
           case "text_delta":
-            if (block?.type === "text") block.text += delta.text;
+            if (block?.type === "text") {
+              block.text += delta.text;
+              if (delta.text !== "") onDelta?.({ type: "text", text: delta.text });
+            }
             break;
           case "thinking_delta":
-            if (block?.type === "thinking") block.thinking += delta.thinking;
+            if (block?.type === "thinking") {
+              block.thinking += delta.thinking;
+              if (delta.thinking !== "") onDelta?.({ type: "thinking", text: delta.thinking });
+            }
             break;
           case "signature_delta":
             if (block?.type === "thinking") block.signature = (block.signature ?? "") + delta.signature;
@@ -271,6 +282,6 @@ export class AnthropicProvider implements Provider {
       throw new Error("Anthropic 响应缺少数据流");
     }
 
-    return readAnthropicStream(parseSse(response.body));
+    return readAnthropicStream(parseSse(response.body), options.onDelta);
   }
 }

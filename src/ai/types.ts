@@ -74,9 +74,21 @@ export interface ModelRequest {
   tools: ToolDefinition[];
 }
 
+/**
+ * 流式增量：模型生成过程中陆续收到的片段，只用于实时显示；完整的消息仍然由 complete 返回。
+ * 显示文字、推理和工具调用的准备状态；工具参数随完整消息返回。
+ */
+export type StreamDelta =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  /** 开始生成一个工具调用：这时只知道名字，参数还在生成 */
+  | { type: "toolCallStart"; id: string; name: string };
+
 export interface CompleteOptions {
   /** 中止信号：被中止时尽快结束请求，这次调用以异常结束 */
   signal?: AbortSignal;
+  /** 收到增量时调用；不传表示不需要实时显示 */
+  onDelta?: (delta: StreamDelta) => void;
 }
 
 /** 模型接入层的统一接口，每家厂商一个实现 */
