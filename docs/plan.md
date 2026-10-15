@@ -48,6 +48,9 @@
 5. 会话存成 JSONL，加上上下文压缩。
 6. 中断，以及运行中用户输入的消息先排队。
 7. 评测任务集（暂缓，之后再做）。
+8. 模型回复流式显示。
+9. 提示缓存。
+10. 项目指令和系统提示：读取 AGENTS.md，加上环境信息，拼成系统提示。
 
 ## 参考代码
 
@@ -57,6 +60,7 @@ pi（[badlogic/pi-mono](https://github.com/badlogic/pi-mono)）：
 - [types.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/types.ts)、[transform-messages.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/api/transform-messages.ts)：统一消息格式，以及换模型时的转换
 - [anthropic-messages.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/api/anthropic-messages.ts)、[openai-completions.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/api/openai-completions.ts)：两个适配器
 - [tools](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/src/core/tools)：工具实现，重点看 `edit.ts` 和 `truncate.ts`
+- [system-prompt.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/system-prompt.ts)、[resource-loader.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/resource-loader.ts)：系统提示的拼接，以及 AGENTS.md 的查找
 - [session-format.md](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/session-format.md)、[compaction.md](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md)：会话格式和压缩
 
 opencode（[anomalyco/opencode](https://github.com/anomalyco/opencode)）：
