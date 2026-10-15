@@ -41,6 +41,8 @@ export interface OpenAIUsage {
   /** 包含命中缓存的部分 */
   prompt_tokens: number;
   completion_tokens: number;
+  /** 有些服务（比如 xAI）的 completion_tokens 不含推理 token，要用总数减去输入才是全部输出 */
+  total_tokens?: number;
   prompt_tokens_details?: { cached_tokens?: number };
 }
 

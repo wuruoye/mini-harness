@@ -7,7 +7,7 @@ import { parseArgs, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
-import { GrokProvider, DEFAULT_MODEL as DEFAULT_GROK_MODEL } from "./ai/grok.ts";
+import { XAI_API_BASE_URL, XaiAuth } from "./ai/xai-auth.ts";
 import type { AssistantMessage, Message, Provider, ToolCallBlock, Usage, UserMessage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
 import {
@@ -108,14 +108,16 @@ function createProvider(): { provider: Provider; model: string } {
   }
 
   if (name === "grok") {
-    const model = process.env.GROK_MODEL || DEFAULT_GROK_MODEL;
-    const provider = new GrokProvider({
+    const model = process.env.GROK_MODEL;
+    if (!model) fail("缺少环境变量 GROK_MODEL。运行 pnpm login:grok 登录后会列出能用的模型");
+    // 设置了 XAI_API_KEY 就按量付费；否则用 pnpm login:grok 登录的订阅凭据，快过期时自动刷新
+    const auth = new XaiAuth({ file: join(homedir(), ".mini-harness", "auth.json") });
+    const provider = new OpenAIProvider({
+      name: "grok",
+      apiKey: process.env.XAI_API_KEY || ((options) => auth.token(options)),
       model,
-      baseUrl: process.env.GROK_BASE_URL || undefined,
+      baseUrl: process.env.GROK_BASE_URL || XAI_API_BASE_URL,
       reasoningEffort: process.env.GROK_REASONING_EFFORT || undefined,
-      authPath: process.env.GROK_AUTH_PATH || join(process.env.GROK_HOME || join(homedir(), ".grok"), "auth.json"),
-      authScope: process.env.GROK_AUTH_SCOPE || undefined,
-      grokBin: process.env.GROK_BIN || undefined,
       fetch: rawSavingFetch("grok"),
     });
     return { provider, model: `grok ${model}` };

@@ -237,6 +237,15 @@ describe("readOpenAIStream", () => {
     await assert.rejects(readOpenAIStream(stream([delta({ content: "" }, "error"), DONE])), /error[\s\S]*chatcmpl-1/);
   });
 
+  test("completion_tokens 不含推理 token 时，输出数用总数减去输入", async () => {
+    const totals = (total_tokens: number): SseEvent =>
+      chunk({ model: MODEL, choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens } });
+    const separate = await readOpenAIStream(stream([delta({ content: "ok" }), finish("stop"), totals(130), DONE]));
+    assert.equal(separate.usage?.outputTokens, 30);
+    const included = await readOpenAIStream(stream([delta({ content: "ok" }), finish("stop"), totals(105), DONE]));
+    assert.equal(included.usage?.outputTokens, 5);
+  });
+
   test("没有 usage 数据块时用量全部为 0", async () => {
     const message = await readOpenAIStream(stream([delta({ content: "x" }), finish("stop"), DONE]));
     assert.deepEqual(message.usage, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
@@ -326,6 +335,47 @@ describe("OpenAIProvider", () => {
       assert.match(err.message, /Incorrect API key/);
       return true;
     });
+  });
+
+  test("apiKey 是函数时每次请求前取 key；401 时用 force 再取一次，重发一次", async () => {
+    const statuses = [401, 200];
+    const fetch = fakeFetch(() => {
+      const status = statuses.shift()!;
+      return status === 200 ? okStream() : new Response("expired", { status });
+    });
+    const asked: (boolean | undefined)[] = [];
+    const provider = new OpenAIProvider({
+      ...OPTIONS,
+      apiKey: async ({ force }) => {
+        asked.push(force);
+        return force ? "new-key" : "old-key";
+      },
+      fetch: fetch.fn,
+    });
+    const message = await provider.complete(request([{ role: "user", content: "hi" }]));
+    assert.deepEqual(message.content, [{ type: "text", text: "ok" }]);
+    assert.deepEqual(asked, [false, true]);
+    assert.deepEqual(
+      fetch.calls.map((call) => new Headers(call.init.headers).get("authorization")),
+      ["Bearer old-key", "Bearer new-key"],
+    );
+  });
+
+  test("固定的 key 遇到 401 不重试；重试后还是 401 时抛异常", async () => {
+    const fixed = fakeFetch(() => new Response("bad key", { status: 401 }));
+    await assert.rejects(new OpenAIProvider({ ...OPTIONS, fetch: fixed.fn }).complete(request([])), /401/);
+    assert.equal(fixed.calls.length, 1);
+
+    const always = fakeFetch(() => new Response("still bad", { status: 401 }));
+    const provider = new OpenAIProvider({ ...OPTIONS, apiKey: async () => "k", fetch: always.fn });
+    await assert.rejects(provider.complete(request([])), /401/);
+    assert.equal(always.calls.length, 2);
+  });
+
+  test("name 决定消息里记的厂商名", async () => {
+    const fetch = fakeFetch(okStream);
+    const message = await new OpenAIProvider({ ...OPTIONS, name: "grok", fetch: fetch.fn }).complete(request([]));
+    assert.equal(message.provider, "grok");
   });
 });
 

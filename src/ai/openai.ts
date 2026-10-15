@@ -5,8 +5,14 @@ import type { AssistantContent, AssistantMessage, CompleteOptions, ModelRequest,
 export const PROVIDER_NAME = "openai";
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
+/** 每次请求前取 key；force 为 true 表示上一次的 key 被拒绝（HTTP 401），要换一个新的 */
+export type ApiKeyProvider = (options: { signal?: AbortSignal; force?: boolean }) => Promise<string>;
+
 export interface OpenAIOptions {
-  apiKey: string;
+  /** 固定的 key，或者每次请求前取 key 的函数（比如会过期的 OAuth token） */
+  apiKey: string | ApiKeyProvider;
+  /** 消息里记的厂商名，默认 PROVIDER_NAME */
+  name?: string;
   model: string;
   /** 默认 DEFAULT_BASE_URL，接兼容服务时改成对方的地址 */
   baseUrl?: string;
@@ -109,7 +115,9 @@ export function toOpenAIRequest(
  * - 内容块的顺序：thinking（如果有）、text（如果有）、工具调用（按 index 从小到大）
  * - finish_reason 映射：stop → "stop"；tool_calls → "toolUse"；length → "length"；content_filter → "refusal"；其他值抛异常
  * - usage：inputTokens 为 prompt_tokens 减去 cached_tokens，cacheReadTokens 为 cached_tokens，
- *   outputTokens 为 completion_tokens，cacheWriteTokens 为 0；没有 usage 数据块时全部为 0
+ *   outputTokens 为 completion_tokens，cacheWriteTokens 为 0；没有 usage 数据块时全部为 0。
+ *   有 total_tokens 且减去 prompt_tokens 后比 completion_tokens 大时（推理 token 没算进 completion_tokens），
+ *   outputTokens 用这个差
  * - 没收到 [DONE] 就结束了要抛异常，信息里提到 [DONE]；收到了但从没拿到 finish_reason 也抛异常
  * - 非空文字和推理片段通过 onDelta 发出；每个 index 的工具调用第一次拿到非空名字时发一次 toolCallStart
  */
@@ -140,7 +148,9 @@ export async function readOpenAIStream(
     if (chunk.usage) {
       usage.cacheReadTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
       usage.inputTokens = chunk.usage.prompt_tokens - usage.cacheReadTokens;
-      usage.outputTokens = chunk.usage.completion_tokens;
+      const { prompt_tokens, completion_tokens, total_tokens } = chunk.usage;
+      usage.outputTokens =
+        total_tokens !== undefined && total_tokens - prompt_tokens > completion_tokens ? total_tokens - prompt_tokens : completion_tokens;
     }
 
     for (const choice of chunk.choices) {
@@ -218,21 +228,32 @@ export class OpenAIProvider implements Provider {
   /**
    * POST {baseUrl}/chat/completions，请求头带 authorization: Bearer {apiKey} 和 content-type: application/json，
    * 请求体是 toOpenAIRequest 的结果。
+   * apiKey 是函数时，每次请求前调用它取 key；返回 HTTP 401 时用 force 再取一次，重发一次。
    * HTTP 状态码不是 2xx 时抛异常，信息里带上状态码和响应正文；
    * options.signal 原样传给 fetch，用户中断时请求会立刻结束。
-   * 否则用 parseSse 和 readOpenAIStream 把响应解析成 assistant 消息。
+   * 否则用 parseSse 和 readOpenAIStream 把响应解析成 assistant 消息，provider 记为 name。
    */
   async complete(request: ModelRequest, options: CompleteOptions = {}): Promise<AssistantMessage> {
-    const { apiKey, baseUrl = DEFAULT_BASE_URL, fetch: fetchImpl = globalThis.fetch } = this.#options;
-    const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(toOpenAIRequest(request, this.#options)),
-      signal: options.signal,
-    });
+    const { apiKey, name = PROVIDER_NAME, baseUrl = DEFAULT_BASE_URL, fetch: fetchImpl = globalThis.fetch } = this.#options;
+    const body = JSON.stringify(toOpenAIRequest(request, this.#options));
+    const send = (key: string) =>
+      fetchImpl(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        body,
+        signal: options.signal,
+      });
+
+    const keyOf = (force: boolean) =>
+      typeof apiKey === "string" ? Promise.resolve(apiKey) : apiKey({ signal: options.signal, force });
+    let response = await send(await keyOf(false));
+    if (response.status === 401 && typeof apiKey !== "string") {
+      await response.body?.cancel();
+      response = await send(await keyOf(true));
+    }
 
     if (!response.ok) {
       throw new Error(`OpenAI 请求失败（HTTP ${response.status}）：${await response.text()}`);
@@ -241,6 +262,7 @@ export class OpenAIProvider implements Provider {
       throw new Error("OpenAI 响应缺少数据流");
     }
 
-    return readOpenAIStream(parseSse(response.body), options.onDelta);
+    const message = await readOpenAIStream(parseSse(response.body), options.onDelta);
+    return name === PROVIDER_NAME ? message : { ...message, provider: name };
   }
 }

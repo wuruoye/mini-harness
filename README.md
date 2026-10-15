@@ -1,6 +1,6 @@
 # mini-harness
 
-学习用的 coding agent harness。用 TypeScript 实现，直接用 `fetch` 调用 Anthropic Messages 和 OpenAI Chat Completions 两种接口，支持复用 Grok Build 订阅登录，不依赖厂商 SDK。
+学习用的 coding agent harness。用 TypeScript 实现，直接用 `fetch` 调用 Anthropic Messages 和 OpenAI Chat Completions 两种接口，不依赖厂商 SDK；Grok 可以用 xAI 订阅账号登录。
 
 ## 环境
 
@@ -26,18 +26,18 @@ pnpm start
 
 `LLM_PROVIDER` 决定用哪家，默认 `anthropic`，设为 `openai` 时用 OpenAI 格式的接口，改 `OPENAI_BASE_URL` 就能接兼容 OpenAI 的其他服务。
 
-使用 Grok Build 订阅时，先按 [官方说明](https://docs.x.ai/build/overview) 安装 Grok CLI，运行 `grok login` 登录订阅账号，再在 `.env` 设置：
+`LLM_PROVIDER=grok` 时用 xAI 的接口（`https://api.x.ai/v1`，和 OpenAI 格式兼容），有两种认证方式：
+
+- 订阅账号：在 `.env` 设置 `GROK_OAUTH_CLIENT_ID`，运行 `pnpm login:grok`，按提示在浏览器里打开地址、确认验证码。这是 OAuth 设备码登录，做法参照 pi。凭据存到 `~/.mini-harness/auth.json`（只有自己能读），快过期或者接口返回 401 时自动刷新；刷新失败时提示重新登录。登录成功后会列出账号能用的模型。
+- 按量付费：设置 `XAI_API_KEY`，设置了就不用订阅凭据。
 
 ```dotenv
 LLM_PROVIDER=grok
-GROK_MODEL=grok-4.7
+GROK_MODEL=<pnpm login:grok 列出的模型>
+GROK_OAUTH_CLIENT_ID=<你有权使用的 client id>
 ```
 
-然后照常运行 `pnpm start`。`GROK_MODEL` 可以省略，默认 `grok-4.7`；运行 `grok models` 查看当前账号能用的模型。Grok 的文字、思考和工具调用都由本 harness 接收和处理。
-
-程序默认读取 `~/.grok/auth.json`，支持 CLI 的 `GROK_HOME` 和 `GROK_AUTH_PATH`。登录即将过期或接口返回 401 时，会运行 `grok models`，让 CLI 处理刷新、文件锁和凭据保存；刷新失败会提示重新登录。多个 xAI OAuth 条目可以用 `GROK_AUTH_SCOPE` 指定。`GROK_BIN` 可以指定 CLI 路径，`GROK_REASONING_EFFORT` 可以设置模型的思考深度。
-
-Grok 接入始终使用订阅 OAuth 登录，不需要配置 API key。实际额度和模型权限由账号套餐决定，接口拒绝或额度不足时会报告服务端错误。`GROK_BASE_URL` 可用于自建代理，设置后订阅 token 会发送到该地址。
+`GROK_OAUTH_CLIENT_ID` 必须是你有权使用的 xAI OAuth client id，用订阅凭据调用接口是否符合 xAI 的条款需要自己确认。`GROK_REASONING_EFFORT` 设置思考深度；`GROK_BASE_URL` 改成别的地址时，凭据会发到那个地址。
 
 程序启动时会自己读取 mini-harness 根目录下的 `.env`，不管从哪个目录、用什么方式启动都一样；已经在环境里设置过的变量优先，不会被 `.env` 覆盖。
 
@@ -144,7 +144,7 @@ pnpm explore:anthropic --tool 读一下 package.json    # 带上 read_file 工�
 
 agent 运行时也可以保存原始响应：在 `.env` 里设置 `MH_SAVE_RAW=1`，每次请求的响应都会另存到 `tmp/`。
 
-把保存的文件交给适配器的解析函数，调试时不用反复请求 API。文件名以 `grok-`、`openai-` 开头的分别交给 Grok、OpenAI 适配器，其余交给 Anthropic 适配器：
+把保存的文件交给适配器的解析函数，调试时不用反复请求 API。文件名以 `grok-`、`openai-` 开头的交给 OpenAI 适配器，其余交给 Anthropic 适配器：
 
 ```bash
 pnpm replay tmp/anthropic-xxx.sse
@@ -160,7 +160,7 @@ pnpm replay tmp/anthropic-xxx.sse
 |---|---|
 | `src/main.ts` | 命令行入口 |
 | `scripts/` | 观察和回放 API 原始响应的脚本 |
-| `src/ai/` | 模型接入层：统一消息类型、SSE 解析、Anthropic、OpenAI 和 Grok 适配器、测试用的假模型 |
+| `src/ai/` | 模型接入层：统一消息类型、SSE 解析、Anthropic 和 OpenAI 适配器、xAI 订阅登录、测试用的假模型 |
 | `src/agent/` | 主循环、工具接口、权限规则、会话存储、上下文压缩 |
 | `src/tools/` | 各个工具 |
 | `docs/plan.md` | 方案、分工、里程碑和参考代码 |

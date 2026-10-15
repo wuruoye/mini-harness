@@ -12,6 +12,7 @@
     "start:debug": "node --inspect-wait src/main.ts",
     "explore:anthropic": "node scripts/explore-anthropic.ts",
     "explore:openai": "node scripts/explore-openai.ts",
+    "login:grok": "node scripts/login-grok.ts",
     "replay": "node scripts/replay.ts",
     "test": "node --test",
     "typecheck": "tsc --noEmit",
