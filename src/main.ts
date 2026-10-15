@@ -19,7 +19,7 @@ import {
   type PermissionMode,
   type PermissionRule,
 } from "./agent/permission.ts";
-import type { AgentEvent, PermissionDecision, SandboxPolicy } from "./agent/types.ts";
+import type { AgentEvent, PermissionDecision, SandboxPolicy, Tool } from "./agent/types.ts";
 import { bashTool } from "./tools/bash.ts";
 import { editTool } from "./tools/edit.ts";
 import { readFileTool } from "./tools/read-file.ts";
@@ -29,6 +29,7 @@ import { appendCompaction, appendMessage, createSession, listSessions, loadSessi
 import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
 import { loadedFromHistory, withNestedInstructions } from "./agent/nested-instructions.ts";
+import { createTaskTool } from "./agent/subagent.ts";
 import { MarkdownStream, renderMarkdown } from "./ui/markdown.ts";
 import { LineTerminal, type Terminal } from "./ui/terminal.ts";
 import { InkTerminal } from "./ui/ink-terminal.ts";
@@ -109,18 +110,27 @@ function createProvider(): { provider: Provider; model: string } {
 
 const { provider, model } = createProvider();
 const loadedInstructions = new Set<string>();
-const tools = [
-  withNestedInstructions(readFileTool, "path", loadedInstructions),
-  bashTool,
-  withNestedInstructions(editTool, "path", loadedInstructions),
-  withNestedInstructions(writeFileTool, "path", loadedInstructions),
-];
+
+/** 主代理传入自己的集合；子代理每次调用时使用新的集合。 */
+function createTools(loaded = new Set<string>()): Tool[] {
+  return [
+    withNestedInstructions(readFileTool, "path", loaded),
+    bashTool,
+    withNestedInstructions(editTool, "path", loaded),
+    withNestedInstructions(writeFileTool, "path", loaded),
+  ];
+}
+
 // 本次会话的权限规则；回答「本次会话都允许」时会往后追加
 const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
 const env = await detectEnvironment(cwd, new Date());
 const instructionFiles = await loadInstructionFiles({ cwd, gitRoot: env.gitRoot, globalDir: join(homedir(), ".mini-harness") });
 const systemPrompt = buildSystemPrompt(instructionFiles, env);
+const tools = [
+  ...createTools(loadedInstructions),
+  createTaskTool({ provider, system: systemPrompt, createTools }),
+];
 
 /** 启动参数：--mode 权限模式，--continue 接着上次的会话，--resume <id> 打开指定会话 */
 function parseCli() {

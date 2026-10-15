@@ -87,7 +87,9 @@ pnpm start --resume <会话 id>   # 打开指定会话
 
 ## 工具和权限
 
-agent 有四个工具：`read_file`、`bash`、`edit`、`write_file`。每次调用工具前按 `src/agent/permission.ts` 里的规则判断：读文件和 `git status`、`ls` 这类只读命令直接放行，`rm -rf` 直接拒绝，其他操作在命令行里询问。回答 `y` 允许，`a` 在本次会话里一直允许同一条命令或同一个文件，`n` 拒绝，也可以直接输入拒绝的理由，理由会交给模型。
+agent 有五个工具：`read_file`、`bash`、`edit`、`write_file`、`task`。每次调用工具前按 `src/agent/permission.ts` 里的规则判断：读文件和 `git status`、`ls` 这类只读命令直接放行，`rm -rf` 直接拒绝，其他操作在命令行里询问。回答 `y` 允许，`a` 在本次会话里一直允许同一条命令或同一个文件，`n` 拒绝，也可以直接输入拒绝的理由，理由会交给模型。
+
+`task` 把完整的任务说明交给子代理，使用同一模型和独立上下文，默认最多请求 30 次。每次任务的工具和子目录指令加载集合各自独立，主对话及会话文件只保存任务调用和最后的汇报。子代理沿用当前权限、沙箱和中断信号，不能继续派出子代理；用户插话由主代理接收。
 
 权限模式在规则判断之后再做调整，启动时用 `pnpm start --mode bypass` 或 `.env` 里的 `MH_PERMISSION_MODE` 指定，运行中输入 `/mode` 查看、`/mode bypass` 切换：
 
