@@ -28,14 +28,9 @@ import { writeFileTool } from "./tools/write-file.ts";
 import { loadProjectEnv } from "./env.ts";
 import { appendCompaction, appendMessage, createSession, listSessions, loadSession, type Session } from "./agent/session.ts";
 import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
+import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
 
 loadProjectEnv();
-
-const SYSTEM_PROMPT = `你是一个编程助手，在用户的项目目录里工作。
-需要了解代码时，用工具读取文件，不要猜测文件内容。
-修改已有文件用 edit，新建文件用 write_file，运行命令用 bash。改完代码后，能运行测试就运行测试确认。
-用户拒绝某个操作时，按用户给的理由调整做法，不要换个方式重试同一件事。
-回答使用中文，简洁直接。`;
 
 const EFFORTS: AnthropicEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
@@ -113,6 +108,9 @@ const tools = [readFileTool, bashTool, editTool, writeFileTool];
 // 本次会话的权限规则；回答「本次会话都允许」时会往后追加
 const rules: PermissionRule[] = [...DEFAULT_RULES];
 const cwd = process.cwd();
+const env = await detectEnvironment(cwd, new Date());
+const instructionFiles = await loadInstructionFiles({ cwd, gitRoot: env.gitRoot, globalDir: join(homedir(), ".mini-harness") });
+const systemPrompt = buildSystemPrompt(instructionFiles, env);
 
 /** 启动参数：--mode 权限模式，--continue 接着上次的会话，--resume <id> 打开指定会话 */
 function parseCli() {
@@ -411,6 +409,9 @@ console.log(
   ),
 );
 console.log(describeMode());
+if (instructionFiles.length > 0) {
+  console.log(styleText("dim", `已加载项目指令：${instructionFiles.map((file) => file.path).join("、")}`));
+}
 session = await openInitialSession();
 if (session) {
   console.log(styleText("dim", `已恢复会话 ${session.id}，共 ${session.messages.length} 条消息`));
@@ -485,7 +486,7 @@ while (true) {
   try {
     const result = await runAgent([...context, userMessage], {
       provider,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       tools,
       cwd,
       onEvent: (event) => {
