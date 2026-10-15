@@ -31,7 +31,10 @@ export interface OpenAIOptions {
  * - 既没有文字也没有工具调用的 assistant 消息整条省略
  * - 每个工具结果单独一条 role 为 "tool" 的消息；isError 为 true 时在 content 前面加上 "错误："
  */
-export function toOpenAIRequest(request: ModelRequest, options: OpenAIOptions): OpenAIRequestBody {
+export function toOpenAIRequest(
+  request: ModelRequest,
+  options: Pick<OpenAIOptions, "model" | "maxTokens" | "reasoningEffort">,
+): OpenAIRequestBody {
   const body: OpenAIRequestBody = {
     model: options.model,
     messages: [{ role: "system", content: request.system }],

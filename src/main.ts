@@ -7,6 +7,7 @@ import { parseArgs, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
+import { GrokProvider, DEFAULT_MODEL as DEFAULT_GROK_MODEL } from "./ai/grok.ts";
 import type { AssistantMessage, Message, Provider, ToolCallBlock, Usage, UserMessage } from "./ai/types.ts";
 import { runAgent } from "./agent/loop.ts";
 import {
@@ -106,7 +107,21 @@ function createProvider(): { provider: Provider; model: string } {
     return { provider, model: `openai ${model}` };
   }
 
-  fail(`LLM_PROVIDER 只能是 anthropic 或 openai，现在是 ${name}`);
+  if (name === "grok") {
+    const model = process.env.GROK_MODEL || DEFAULT_GROK_MODEL;
+    const provider = new GrokProvider({
+      model,
+      baseUrl: process.env.GROK_BASE_URL || undefined,
+      reasoningEffort: process.env.GROK_REASONING_EFFORT || undefined,
+      authPath: process.env.GROK_AUTH_PATH || join(process.env.GROK_HOME || join(homedir(), ".grok"), "auth.json"),
+      authScope: process.env.GROK_AUTH_SCOPE || undefined,
+      grokBin: process.env.GROK_BIN || undefined,
+      fetch: rawSavingFetch("grok"),
+    });
+    return { provider, model: `grok ${model}` };
+  }
+
+  fail(`LLM_PROVIDER 只能是 anthropic、openai 或 grok，现在是 ${name}`);
 }
 
 const { provider, model } = createProvider();
