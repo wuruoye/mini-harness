@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { parseArgs, styleText } from "node:util";
+import { parseArgs, stripVTControlCharacters, styleText } from "node:util";
 import { AnthropicProvider } from "./ai/anthropic.ts";
 import type { AnthropicEffort } from "./ai/anthropic-types.ts";
 import { OpenAIProvider } from "./ai/openai.ts";
@@ -30,6 +30,7 @@ import { appendCompaction, appendMessage, createSession, listSessions, loadSessi
 import { buildContext, compact, contextTokens } from "./agent/compaction.ts";
 import { buildSystemPrompt, detectEnvironment, loadInstructionFiles } from "./agent/system-prompt.ts";
 import { loadedFromHistory, withNestedInstructions } from "./agent/nested-instructions.ts";
+import { MarkdownStream, renderMarkdown } from "./ui/markdown.ts";
 
 loadProjectEnv();
 
@@ -186,10 +187,25 @@ function preview(text: string, max = 120): string {
 const streamedTypes = new Set<"text" | "thinking">();
 let streamType: "text" | "thinking" | undefined;
 let streamLineOpen = false;
+let markdown = new MarkdownStream(styleText);
 
-function finishStreamLine(): void {
+function writeStream(text: string): void {
+  if (text === "") return;
+  process.stdout.write(text);
+  const visible = stripVTControlCharacters(text);
+  if (visible !== "") streamLineOpen = !visible.endsWith("\n");
+}
+
+/** 插话回显只补换行，保留还在等后续内容的 Markdown 格式。 */
+function breakStreamLine(): void {
   if (streamLineOpen) process.stdout.write("\n");
   streamLineOpen = false;
+}
+
+function finishStreamLine(): void {
+  writeStream(markdown.end());
+  breakStreamLine();
+  markdown = new MarkdownStream(styleText);
   streamType = undefined;
 }
 
@@ -199,7 +215,7 @@ function printEvent(event: AgentEvent): void {
       if (event.message.role !== "assistant") return;
       finishStreamLine();
       for (const block of event.message.content) {
-        if (block.type === "text" && block.text && !streamedTypes.has("text")) console.log(block.text);
+        if (block.type === "text" && block.text && !streamedTypes.has("text")) console.log(renderMarkdown(block.text, styleText));
         else if (block.type === "thinking" && block.thinking && !streamedTypes.has("thinking")) console.log(styleText("dim", block.thinking));
       }
       streamedTypes.clear();
@@ -212,14 +228,14 @@ function printEvent(event: AgentEvent): void {
         console.log(styleText("cyan", `正在准备调用工具 ${delta.name}……`));
       } else if (delta.text !== "") {
         if (streamType !== undefined && streamType !== delta.type) finishStreamLine();
-        process.stdout.write(delta.type === "thinking" ? styleText("dim", delta.text) : delta.text);
+        writeStream(delta.type === "thinking" ? styleText("dim", delta.text) : markdown.push(delta.text));
         streamedTypes.add(delta.type);
         streamType = delta.type;
-        streamLineOpen = !delta.text.endsWith("\n");
       }
       return;
     }
     case "toolStart":
+      finishStreamLine();
       console.log(styleText("cyan", `→ ${event.toolCall.name} ${JSON.stringify(event.toolCall.arguments)}`));
       return;
     case "toolEnd": {
@@ -351,7 +367,7 @@ rl.on("line", (line) => {
   else if (running && steerable) {
     if (line.trim() !== "") {
       steering.push({ role: "user", content: line });
-      finishStreamLine();
+      breakStreamLine();
       console.log(styleText("dim", "  （收到，会在这一步完成后交给模型）"));
     }
   } else pendingLines.push(line);
